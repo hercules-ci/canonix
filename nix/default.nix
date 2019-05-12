@@ -6,7 +6,10 @@ let
     inherit (import sources.gitignore { inherit (pkgs) lib; }) gitignoreSource;
     
     canonixHaskellPackages = super.haskellPackages.extend (hself: hsuper: {
-      canonix = hsuper.callCabal2nix "canonix" (self.gitignoreSource ../canonix) {};
+      canonix =
+        hsuper.callCabal2nix "canonix" (self.gitignoreSource ../canonix) {};
+      haskell-tree-sitter =
+        hsuper.callCabal2nix "haskell-tree-sitter" (super.callPackage ./src/haskell-tree-sitter.nix {}) {};
     });
   };
   config = {};
