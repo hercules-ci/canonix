@@ -10,6 +10,8 @@ let
         hsuper.callCabal2nix "canonix" (self.gitignoreSource ../canonix) {};
       haskell-tree-sitter =
         hsuper.callCabal2nix "haskell-tree-sitter" (super.callPackage ./src/haskell-tree-sitter.nix {}) {};
+      tree-sitter-nix =
+        hsuper.callCabal2nix "tree-sitter-nix" ../tree-sitter-nix {};
     });
   };
   config = {};

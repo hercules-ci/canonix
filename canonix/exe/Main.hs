@@ -1,4 +1,1 @@
-module Main where
-
-main :: IO ()
-main = putStrLn "Hello, Haskell!"
+module Main (main) where import Example (main)

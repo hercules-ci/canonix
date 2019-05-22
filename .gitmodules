@@ -1,0 +1,3 @@
+[submodule "tree-sitter-nix/vendor/tree-sitter-nix"]
+	path = tree-sitter-nix/vendor/tree-sitter-nix
+	url = https://github.com/cstrahan/tree-sitter-nix
