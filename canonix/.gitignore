@@ -1,0 +1,5 @@
+.ghc.environment.*
+dist
+dist-newstyle
+result
+result-*

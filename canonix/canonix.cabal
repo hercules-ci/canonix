@@ -16,13 +16,20 @@ category:            Language
 extra-source-files:  CHANGELOG.md
 
 library
-  exposed-modules:     Example
+  exposed-modules:     Format
   -- other-modules:
   -- other-extensions:
   build-depends:       base ^>=4.12.0.0
                      , bytestring
+                     , comonad
+                     , containers
+                     , free
                      , haskell-tree-sitter
+                     , mtl
+                     , recursion-schemes
+                     , semigroups
                      , tree-sitter-nix
+                     , utf8-string
   hs-source-dirs:      src
   default-language:    Haskell2010
 
@@ -31,6 +38,7 @@ executable canonix
   -- other-modules:
   -- other-extensions:
   build-depends:       base ^>=4.12.0.0
+                     , bytestring
                      , canonix
                      , optparse-applicative
   hs-source-dirs:      exe
