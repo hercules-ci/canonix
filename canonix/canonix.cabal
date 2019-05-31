@@ -7,7 +7,7 @@ version:             0.1.0.0
 synopsis:            A formatter for the Nix language
 -- description:
 -- bug-reports:
-license:             BSD-3-Clause
+license:             Apache-2.0
 license-file:        LICENSE
 author:              Robert Hensing
 maintainer:          robert@roberthensing.nl
