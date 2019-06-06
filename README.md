@@ -1,0 +1,7 @@
+# canonix
+
+Nix formatter written in Haskell using [tree-sitter-nix](https://github.com/cstrahan/tree-sitter-nix) grammar.
+
+## sponsors 
+
+Intial prototype was sponsored by [NumTide Ltd](https://numtide.com/)
