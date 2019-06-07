@@ -1,6 +1,6 @@
 # canonix
 
-Nix formatter written in Haskell using [tree-sitter-nix](https://github.com/cstrahan/tree-sitter-nix) grammar.
+Nix formatter prototype written in Haskell using [tree-sitter-nix](https://github.com/cstrahan/tree-sitter-nix) grammar.
 
 ## sponsors 
 
