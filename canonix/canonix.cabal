@@ -24,10 +24,10 @@ library
                      , comonad
                      , containers
                      , free
-                     , haskell-tree-sitter
                      , mtl
                      , recursion-schemes
                      , semigroups
+                     , tree-sitter
                      , tree-sitter-nix
                      , utf8-string
   hs-source-dirs:      src

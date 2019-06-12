@@ -1,14 +1,14 @@
 {
     "nixpkgs": {
-        "url": "https://github.com/NixOS/nixpkgs-channels/archive/312a059bef8b29b4db4e73dc02ff441cab7bb26d.tar.gz",
+        "url": "https://github.com/NixOS/nixpkgs-channels/archive/4649b6ef4b5e7a98d84a36fc7f0a89c65c4c7ad1.tar.gz",
         "owner": "NixOS",
         "branch": "nixos-19.03",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz",
         "repo": "nixpkgs-channels",
         "type": "tarball",
-        "sha256": "1j52yvkhw1inp6ilpqy81xv1bbwgwqjn0v9647whampkqgn6dxhk",
+        "sha256": "1wwqr40jcf7pqr5x9rwz1m42z07sbzawq5d1nyf7h5ccwk25q9mj",
         "description": "Nixpkgs/NixOS branches that track the Nixpkgs/NixOS channels",
-        "rev": "312a059bef8b29b4db4e73dc02ff441cab7bb26d"
+        "rev": "4649b6ef4b5e7a98d84a36fc7f0a89c65c4c7ad1"
     },
     "gitignore": {
         "homepage": "",
@@ -21,6 +21,30 @@
         "sha256": "0358wcmgmc5mx4xfr08fxra4k05zvl2qyaix4gdlm7iwcscz609a",
         "description": "Nix function for filtering local git sources, that just works",
         "rev": "4064e436313191f11969986e66b81cb6bb61bae6"
+    },
+    "haskell-hedgehog": {
+        "homepage": "",
+        "url": "https://github.com/hedgehogqa/haskell-hedgehog/archive/a20005f4d584f19ea05524320f1c9a90a44c81db.tar.gz",
+        "owner": "hedgehogqa",
+        "branch": "1.0",
+        "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz",
+        "repo": "haskell-hedgehog",
+        "type": "tarball",
+        "sha256": "1lca47ilzg75ibv2qbb1pl466rba6ir8ra0cg4qlji63dsbpkiks",
+        "description": "Release with confidence, state-of-the-art property testing for Haskell.",
+        "rev": "a20005f4d584f19ea05524320f1c9a90a44c81db"
+    },
+    "fused-effects": {
+        "homepage": "",
+        "url": "https://github.com/fused-effects/fused-effects/archive/91cb63c7607cc4c7caa233689c6654669044156d.tar.gz",
+        "owner": "fused-effects",
+        "branch": "master",
+        "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz",
+        "repo": "fused-effects",
+        "type": "tarball",
+        "sha256": "1qr0j68wiv99wfbzwdgr2098kpckvy2p22l9ripg4rai7i08c1n2",
+        "description": "A fast, flexible, fused effect system for Haskell",
+        "rev": "91cb63c7607cc4c7caa233689c6654669044156d"
     },
     "niv": {
         "homepage": "https://github.com/nmattia/niv",
