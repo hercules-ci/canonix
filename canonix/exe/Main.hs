@@ -1,6 +1,7 @@
 module Main (main) where
 
 import           Control.Monad
+import           Control.Concurrent.Async   (forConcurrently_)
 import qualified Data.ByteString as BS
 import           Options.Applicative
 import           System.IO (hPutStrLn, stderr)
@@ -29,4 +30,5 @@ runInPlace :: [FilePath] -> IO ()
 runInPlace paths = do
   when (null paths) $ do
     hPutStrLn stderr "No file arguments provided. Did you mean --pipe?"
-  error "in-place not implemented yet" paths
+  forConcurrently_ paths $ \path ->
+    BS.writeFile path =<< format =<< BS.readFile path
