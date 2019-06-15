@@ -33,8 +33,6 @@ import           Foreign.Marshal.Utils          ( new )
 import           Control.Monad
 import           System.IO.Unsafe
 
-import           TreeSitter.Ptr
-
 import           TreeSitter.Parser
 import           TreeSitter.Tree
 import           TreeSitter.Language
@@ -270,7 +268,7 @@ formatter self children =
                 v
                 sc
               newline
-            
+
             (Inherit, [(Inherit, inhKw), (Parenthesized, p), (Attrs, attrs), (Semicolon, sc)]) -> do
               inhKw
               space
