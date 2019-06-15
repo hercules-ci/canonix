@@ -33,8 +33,6 @@ import           Foreign.Marshal.Utils          ( new )
 import           Control.Monad
 import           System.IO.Unsafe
 
-import           TreeSitter.Ptr
-
 import           TreeSitter.Parser
 import           TreeSitter.Tree
 import           TreeSitter.Language
