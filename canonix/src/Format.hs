@@ -268,7 +268,7 @@ formatter self children =
                 v
                 sc
               newline
-            
+
             (Inherit, [(Inherit, inhKw), (Parenthesized, p), (Attrs, attrs), (Semicolon, sc)]) -> do
               inhKw
               space

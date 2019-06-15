@@ -1,3 +1,4 @@
+# needed to fetch submodules
 { fetchgit }: fetchgit {
   url = https://github.com/tree-sitter/haskell-tree-sitter.git;
   rev = "00f7f81425355788184b5b31e3781cf104cb4081";
