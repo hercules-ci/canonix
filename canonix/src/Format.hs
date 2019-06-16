@@ -88,8 +88,7 @@ format source = do
     dump 0 root
 
     tree <- mkTree root
-    atree <- traverse abstract tree
-    let f = bottomUp atree formatter
+    let f = bottomUp (fmap abstract tree) formatter
         (_result, lastPreceding, synthesized) = f (rootInherited source) rootPreceding
     hPutStrLn stderr $ "Encountered these unknown node types: " <> show (unknownTypes synthesized)
     hPutStrLn stderr $ "Verbatim fallback nodes: " <> show (fallbackNodes synthesized)
@@ -99,76 +98,19 @@ bottomUp :: (Traversable f, Monoid w) => Cofree f a -> (a -> f (a, RWS inherited
   -> inherited -> preceding -> (b, preceding, w)
 bottomUp t f = runRWS $ snd $ (cataA (\(self T.:< c) -> (self, f self c)) t)
 
--- Abstract node
-data Type
-   = App
-   | AttrPath
-   | Attrs -- in inherit
-   | AttrSet
-   | BClose
-   | Bind
-   | BOpen
-   | Colon
-   | Eq1 -- "="
-   | Expression
-   | Formal
-   | Formals
-   | Function
-   | Identifier
-   | In
-   | Inherit
-   | Let
-   | Parenthesized
-   | QuestionMark
-   | Semicolon
-   | SPath
-   | Other String
-   deriving (Eq, Ord, Show) -- no particular order
-
--- TODO (performance): Figure out nodeSymbol and avoid strings here?
---                     Maybe solve this in tree-sitter-nix instead?
---                     Doing it there means we can use its Node in pure code.
-toType :: CString -> IO Type
-toType s = f <$> peekCString s
-  where
-    f ";" = Semicolon
-    f ":" = Colon
-    f "?" = QuestionMark
-    f "{" = BOpen
-    f "}" = BClose
-    f "=" = Eq1
-    f "app" = App
-    f "attrpath" = AttrPath
-    f "attrs" = Attrs
-    f "attrset" = AttrSet
-    f "bind" = Bind
-    f "expression" = Expression
-    f "formal" = Formal
-    f "formals" = Formals
-    f "function" = Function
-    f "identifier" = Identifier
-    f "in" = In
-    f "inherit" = Inherit
-    f "let" = Let
-    f "parenthesized" = Parenthesized
-    f "spath" = SPath
-    f x = Other x -- can be avoided by integrating this into tree-sitter-nix
-                  -- or by treating it as an error
-
 -- | "Abstract" node
 --
 -- TODO: Put in separate module and just call it Node
 data ANode = ANode
   { startByte :: {-# UNPACK #-}!Int
   , endByte :: {-# UNPACK #-}!Int
-  , typ :: !Type
+  , typ :: !Grammar
   , isMultiline :: !Bool -- TODO: maybe preserve line numbers instead so we can figure out which parts of a construct are multiline
   } deriving (Eq, Ord, Show)
 
-abstract n = do
-  t <- toType $ nodeType n
-  pure ANode
-    { typ = t
+abstract n =
+  ANode
+    { typ = toEnum (fromEnum (nodeSymbol n))
     , startByte = fromIntegral $ nodeStartByte n
     , endByte = fromIntegral $ nodeEndByte n
     , isMultiline = pointRow (nodeStartPoint n) /= pointRow (nodeEndPoint n)
@@ -205,32 +147,32 @@ formatter self children =
               --            *HOWEVER* we don't want to do any kind of deep matching
               --            because that means we enter O(n^2) territory.
               --            The Synthesized type provides memoization!
-            (Function, [(Formals, formals), (Colon, colon), (_, body)]) -> do
+            (Function, [(Formals, formals), (AnonColon, colon), (_, body)]) -> do
               formals
               colon
               withOptionalIndent 2 $ do
                 body
 
-            (Function, [(Identifier, i), (Colon, colon), (Function, body)]) -> do
+            (Function, [(Identifier, i), (AnonColon, colon), (Function, body)]) -> do
               i
               colon
               space
               body
 
-            (Function, [(Identifier, i), (Colon, colon), (_, body)]) -> do
+            (Function, [(Identifier, i), (AnonColon, colon), (_, body)]) -> do
               i
               colon
               withOptionalIndent 2 $ do
                 body
 
-            (Formals, (BOpen, open):children) -> do
+            (Formals, (AnonLBracket, open):children) -> do
               open
               void $ traverse snd children
 
             (Formal, [(Identifier, i)]) -> do
               i
 
-            (Formal, [(Identifier, i), (QuestionMark, q), (_, e)]) -> do
+            (Formal, [(Identifier, i), (AnonQuestion, q), (_, e)]) -> do
               i
               space
               q
@@ -244,14 +186,14 @@ formatter self children =
 
             (Let, (Let, l):rest)
               | (bindings, rest') <- span (\(x, _) -> x == Bind || x == Inherit) rest
-              , [(In, inkw), (bodyTyp, body) ] <- rest'
+              , [(AnonIn, inkw), (bodyTyp, body) ] <- rest'
               -> do
               l
               withIndent 2 $
                 void $ traverse snd bindings
               newline
               inkw
-              if bodyTyp == AttrSet
+              if bodyTyp == Attrset
               then do
                 space
                 body
@@ -259,7 +201,7 @@ formatter self children =
                 withIndent 2 $
                   body
 
-            (Bind, [(AttrPath, a), (Eq1, eq1), (_, v), (Semicolon, sc)]) -> do
+            (Bind, [(Attrpath, a), (AnonEqual, eq1), (_, v), (AnonSemicolon, sc)]) -> do
               a
               space
               eq1
@@ -269,7 +211,7 @@ formatter self children =
                 sc
               newline
 
-            (Inherit, [(Inherit, inhKw), (Parenthesized, p), (Attrs, attrs), (Semicolon, sc)]) -> do
+            (Inherit, [(Inherit, inhKw), (Parenthesized, p), (Attrs, attrs), (AnonSemicolon, sc)]) -> do
               inhKw
               space
               p
@@ -279,7 +221,7 @@ formatter self children =
               sc
               newline
 
-            (Inherit, [(Inherit, inhKw), (Attrs, attrs), (Semicolon, sc)]) -> do -- FIXME specific attrs
+            (Inherit, [(Inherit, inhKw), (Attrs, attrs), (AnonSemicolon, sc)]) -> do -- FIXME specific attrs
               inhKw
               withIndent 2 $ do
                 space
@@ -287,9 +229,9 @@ formatter self children =
               sc
               newline
 
-            (AttrSet, (BOpen, open):rest)
+            (Attrset, (AnonLBracket, open):rest)
               | (bindings, rest') <- span (\(x, _) -> x == Bind || x == Inherit) rest
-              , [(BClose, close)] <- rest'
+              , [(AnonRBracket, close)] <- rest'
               -> do
               open
               withIndent 2 $
@@ -301,22 +243,17 @@ formatter self children =
                 space
                 i
 
-            (BClose, []) -> verbatim self
-            (BOpen, []) -> verbatim self
-            (Colon, []) -> verbatim self
+            (AnonRBracket, []) -> verbatim self
+            (AnonLBracket, []) -> verbatim self
+            (AnonColon, []) -> verbatim self
             (Identifier, []) -> verbatim self
-            (Eq1, []) -> verbatim self
-            (In, []) -> verbatim self
+            (AnonEqual, []) -> verbatim self
+            (AnonIn, []) -> verbatim self
             (Inherit, []) -> verbatim self
             (Let, []) -> verbatim self
-            (QuestionMark, []) -> verbatim self
-            (Semicolon, []) -> verbatim self
-            (SPath, []) -> verbatim self
-
-            (Other s, _) -> do
-              tell mempty { unknownTypes = S.singleton s }
-              verbatim self
-
+            (AnonQuestion, []) -> verbatim self
+            (AnonSemicolon, []) -> verbatim self
+            (Spath, []) -> verbatim self
             (x, y) -> do
               tell mempty { fallbackNodes = S.singleton self }
               verbatim self

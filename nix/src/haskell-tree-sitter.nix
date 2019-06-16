@@ -1,6 +1,6 @@
 # needed to fetch submodules
 { fetchgit }: fetchgit {
-  url = https://github.com/tree-sitter/haskell-tree-sitter.git;
-  rev = "00f7f81425355788184b5b31e3781cf104cb4081";
-  sha256 = "sha256:0w2q4xcxnfwkrp2k4ylglq5y6cb9yrys4v1wwzknn0zk18hdvp3q";
+  url = https://github.com/domenkozar/haskell-tree-sitter.git;
+  rev = "01270dcd45e1f45e323bcfcd8015b4a47a0cbb37";
+  sha256 = "sha256:0y8mcicijdp3f0jxz2yg6z6gg7bp9pxvqzy06cg6lskryakiz61v";
 }
