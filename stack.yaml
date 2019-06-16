@@ -1,0 +1,11 @@
+resolver: lts-13.25
+packages:
+- canonix
+# TODO: automate cloning it from niv
+- location: haskell-tree-sitter
+  extra-dep: true
+- location: haskell-tree-sitter/languages/nix
+  extra-dep: true
+extra-deps:
+- fused-effects-0.4.0.0
+- simple-get-opt-0.3
