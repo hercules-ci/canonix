@@ -65,8 +65,8 @@ import Data.Char (ord)
 import Data.String
 import Data.List ((\\))
 
-format :: ByteString -> IO ByteString
-format source = do
+format :: Bool -> ByteString -> IO ByteString
+format debug source = do
   parser <- ts_parser_new
   ts_parser_set_language parser tree_sitter_nix
 
@@ -85,13 +85,14 @@ format source = do
         printNode i source n
         void $ forChildren n $ \c ->
           dump (i+1) c
-    dump 0 root
+    when debug $ dump 0 root
 
     tree <- mkTree root
     let f = bottomUp (fmap abstract tree) formatter
         (_result, lastPreceding, synthesized) = f (rootInherited source) rootPreceding
-    hPutStrLn stderr $ "Encountered these unknown node types: " <> show (unknownTypes synthesized)
-    hPutStrLn stderr $ "Verbatim fallback nodes: " <> show (fallbackNodes synthesized)
+    when debug $ do
+      hPutStrLn stderr $ "Encountered these unknown node types: " <> show (unknownTypes synthesized)
+      hPutStrLn stderr $ "Verbatim fallback nodes: " <> show (fallbackNodes synthesized)
     pure $ BL.toStrict $ BB.toLazyByteString $ out synthesized
 
 bottomUp :: (Traversable f, Monoid w) => Cofree f a -> (a -> f (a, RWS inherited w preceding b) -> RWS inherited w preceding b)

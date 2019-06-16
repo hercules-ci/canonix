@@ -3,6 +3,7 @@ module Main (main) where
 import           Control.Monad
 import           Control.Concurrent.Async   (forConcurrently_)
 import qualified Data.ByteString as BS
+import           Data.Function ((&))
 import           Options.Applicative
 import           System.IO (hPutStrLn, stderr)
 
@@ -18,17 +19,22 @@ opts = info (parser <**> helper)
 
 parser :: Parser (IO ())
 parser =
-  runPipe <$ flag' () (long "pipe" <> help "Read from stdin, write to stdout")
-  <|>
-  runInPlace <$> many (argument str (metavar "NIX_FILE")) -- TODO completion
+  (&) <$> optFlags
+      <*>
+  (runPipe <$ flag' () (long "pipe" <> help "Read from stdin, write to stdout")
+  <|> runInPlace <$> many (argument str (metavar "NIX_FILE")) -- TODO completion
+  )
+  where
+    -- TODO: --version
+    optFlags = switch (long "debug" <> short 'd' <> help "Debug mode")
 
-runPipe :: IO ()
-runPipe = do
-  BS.putStr =<< format =<< BS.getContents
+runPipe :: Bool -> IO ()
+runPipe debug = do
+  BS.putStr =<< format debug =<< BS.getContents
 
-runInPlace :: [FilePath] -> IO ()
-runInPlace paths = do
+runInPlace :: [FilePath] -> Bool -> IO ()
+runInPlace paths debug = do
   when (null paths) $ do
     hPutStrLn stderr "No file arguments provided. Did you mean --pipe?"
   forConcurrently_ paths $ \path ->
-    BS.writeFile path =<< format =<< BS.readFile path
+    BS.writeFile path =<< format debug =<< BS.readFile path
