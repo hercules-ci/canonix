@@ -16,35 +16,18 @@ import           TreeSitter.Nix
 import           TreeSitter.Node
 import           Foreign.C.String
 import           Foreign.C.Types
-import           Foreign.Ptr                    ( Ptr(..)
-                                                , nullPtr
-                                                , plusPtr
-                                                )
+import           Foreign.Ptr                    ( nullPtr )
 import           Foreign.Marshal.Alloc          ( malloc
-                                                , mallocBytes
                                                 )
-import           Foreign.Marshal.Array          ( mallocArray )
-import           Foreign.Storable               ( peek
-                                                , peekElemOff
-                                                , poke
+import           Foreign.Marshal.Array          ( peekArray
+                                                , allocaArray
                                                 )
-import           Foreign.Marshal.Utils          ( new )
-
-import           Control.Monad
+import           Foreign.Marshal.Utils          ( with )
+import           Foreign.Storable               ( peek )
 import           System.IO.Unsafe
-
-import           TreeSitter.Parser
-import           TreeSitter.Tree
-import           TreeSitter.Language
-import           TreeSitter.Node
 
 import           Foreign.ForeignPtr
 import           Foreign.C
-import           Foreign.C.String
-import           Foreign.C.Types
-import           Foreign.Ptr                    ( Ptr(..)
-                                                , nullPtr
-                                                )
 import           System.IO
 
 -- recursion
@@ -54,6 +37,7 @@ import qualified Control.Comonad.Trans.Cofree as T
 import           Data.Functor.Foldable
 
 -- data flow
+import           Control.Monad
 import           Control.Monad.RWS
 import           Control.Monad.State
 
@@ -383,16 +367,11 @@ mkTree n = (n :<) <$> mkChildren
 
 forChildren :: Node -> (Node -> IO a) -> IO [a]
 forChildren n f = do
-  let childCount = fromIntegral $ nodeChildCount n
-
-  children <- mallocArray childCount
-  tsNode   <- malloc
-  poke tsNode (nodeTSNode n)
-  ts_node_copy_child_nodes tsNode children
-
-  forM [0 .. childCount - 1] $ \n -> do
-    child <- peekElemOff children n
-    f child
+  let count = fromIntegral $ nodeChildCount n
+  children <- allocaArray count $ \childNodesPtr -> do
+    _ <- with (nodeTSNode n) (`ts_node_copy_child_nodes` childNodesPtr)
+    peekArray count childNodesPtr
+  forM children f
 
 nodeInner :: BS.ByteString -> Node -> BS.ByteString
 nodeInner bs n =
