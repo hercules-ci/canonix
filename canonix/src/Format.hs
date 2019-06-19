@@ -368,7 +368,7 @@ mkTree n = (n :<) <$> mkChildren
 forChildren :: Node -> (Node -> IO a) -> IO [a]
 forChildren n f = do
   let count = fromIntegral $ nodeChildCount n
-  children <- allocaArray count $ \ childNodesPtr -> do
+  children <- allocaArray count $ \childNodesPtr -> do
     _ <- with (nodeTSNode n) (`ts_node_copy_child_nodes` childNodesPtr)
     peekArray count childNodesPtr
   forM children f
