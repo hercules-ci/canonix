@@ -3,6 +3,7 @@ module Main (main) where
 import           Control.Monad
 import           Control.Concurrent.Async   (forConcurrently_)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BL
 import           Data.Function ((&))
 import           Options.Applicative
 import           System.IO (hPutStrLn, stderr)
@@ -30,11 +31,11 @@ parser =
 
 runPipe :: Bool -> IO ()
 runPipe debug = do
-  BS.putStr =<< format debug =<< BS.getContents
+  BL.putStr =<< format debug =<< BS.getContents
 
 runInPlace :: [FilePath] -> Bool -> IO ()
 runInPlace paths debug = do
   when (null paths) $ do
     hPutStrLn stderr "No file arguments provided. Did you mean --pipe?"
   forConcurrently_ paths $ \path ->
-    BS.writeFile path =<< format debug =<< BS.readFile path
+    BL.writeFile path =<< format debug =<< BS.readFile path

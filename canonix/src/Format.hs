@@ -1,55 +1,53 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE StandaloneDeriving #-}
 module Format where
 
+import           Control.Comonad.Cofree
+import qualified Control.Comonad.Trans.Cofree as T
+import           Control.Monad
+import           Control.Monad.Free
+import           Control.Monad.Identity
+import           Control.Monad.RWS
+import           Control.Monad.State
 import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
-import qualified Data.ByteString.Lazy          as BL
 import           Data.ByteString.Builder        ( Builder )
 import qualified Data.ByteString.Builder       as BB
+import qualified Data.ByteString.Lazy          as BL
 import qualified Data.ByteString.UTF8          as BU
-import           TreeSitter.Parser
-import           TreeSitter.Tree
-import           TreeSitter.Language
-import           TreeSitter.Nix
-import           TreeSitter.Node
+import           Data.Char (ord)
+import           Data.Functor.Foldable
+import           Data.List ((\\))
+import           Data.Semigroup.Generic
+import           Data.Set                       ( Set )
+import qualified Data.Set                      as S
+import           Data.String
+import           Foreign.C
 import           Foreign.C.String
 import           Foreign.C.Types
-import           Foreign.Ptr                    ( nullPtr )
-import           Foreign.Marshal.Alloc          ( malloc
-                                                )
+import           Foreign.ForeignPtr
+import           Foreign.Marshal.Alloc          ( malloc )
 import           Foreign.Marshal.Array          ( peekArray
                                                 , allocaArray
                                                 )
 import           Foreign.Marshal.Utils          ( with )
+import           Foreign.Ptr                    ( nullPtr )
 import           Foreign.Storable               ( peek )
-import           System.IO.Unsafe
-
-import           Foreign.ForeignPtr
-import           Foreign.C
-import           System.IO
-
--- recursion
-import           Control.Monad.Identity
-import           Control.Comonad.Cofree
-import qualified Control.Comonad.Trans.Cofree as T
-import           Data.Functor.Foldable
-
--- data flow
-import           Control.Monad
-import           Control.Monad.RWS
-import           Control.Monad.State
-
 import           GHC.Generics
-import           Data.Semigroup.Generic
-import           Data.Set                       ( Set )
-import qualified Data.Set                      as S
-import Data.Char (ord)
-import Data.String
-import Data.List ((\\))
+import           System.IO
+import           System.IO.Unsafe
+import           TreeSitter.Language
+import           TreeSitter.Nix
+import           TreeSitter.Node
+import           TreeSitter.Parser
+import           TreeSitter.Tree
 
-format :: Bool -> ByteString -> IO ByteString
+format :: Bool -> ByteString -> IO BL.ByteString
 format debug source = do
   parser <- ts_parser_new
   ts_parser_set_language parser tree_sitter_nix
@@ -73,15 +71,22 @@ format debug source = do
 
     tree <- mkTree root
     let f = bottomUp (fmap abstract tree) formatter
-        (_result, lastPreceding, synthesized) = f (rootInherited source) rootPreceding
+
+    let go (Step chunk tail) = (BB.byteString chunk <> cs, r) where (cs, r) = go tail
+        go (Done r) = pure r
+
+        (blob, r) = go (runFmt (snd f) $ rootInherited source)
+        synthesized = resultSyn r
+
+    -- NB: debug forces the tree before the lazy bytestring does it
     when debug $ do
       hPutStrLn stderr $ "Encountered these unknown node types: " <> show (unknownTypes synthesized)
       hPutStrLn stderr $ "Verbatim fallback nodes: " <> show (fallbackNodes synthesized)
-    pure $ BL.toStrict $ BB.toLazyByteString $ out synthesized
 
-bottomUp :: (Traversable f, Monoid w) => Cofree f a -> (a -> f (a, RWS inherited w preceding b) -> RWS inherited w preceding b)
-  -> inherited -> preceding -> (b, preceding, w)
-bottomUp t f = runRWS $ snd $ (cataA (\(self T.:< c) -> (self, f self c)) t)
+    pure $ BB.toLazyByteString blob
+
+bottomUp :: Cofree [] ANode -> (ANode -> [(ANode, a)] -> a) -> (ANode, a)
+bottomUp t f = cataA (\(self T.:< c) -> (self, f self c)) t
 
 -- | "Abstract" node
 --
@@ -101,17 +106,17 @@ abstract n =
     , isMultiline = pointRow (nodeStartPoint n) /= pointRow (nodeEndPoint n)
     }
 
-type TreeComp = RWS Inherited Synthesized Preceding
+type CnxFmt = Fmt Inherited Synthesized ByteString
 
-verbatim :: ANode -> TreeComp ()
+verbatim :: ANode -> CnxFmt ()
 verbatim n = do
-  src <- asks source
+  src <- asksParent source
   let bb = BB.byteString bs
       bs = BS.drop (startByte n) (BS.take (endByte n) src)
-  tell mempty { out = bb }
+  write bs
   pure ()
 
-formatter :: ANode -> [(ANode, TreeComp ())] -> TreeComp ()
+formatter :: ANode -> [(ANode, CnxFmt ())] -> CnxFmt ()
 formatter self children =
   case (typ self, map (\(node, comp) -> (typ node, comp)) children) of
             (Expression, _) -> do
@@ -123,7 +128,7 @@ formatter self children =
               --       matches causes a combinatorial explosion.
               --
               --       What we may do instead is either
-              --          - Ignore them here and make the write-side of TreeComp
+              --          - Ignore them here and make the write-side of CnxFmt
               --            responsible for adding them back in.
               --          - Not use the built-in pattern matching but some
               --            sort of parser-like thing that remembers comments.
@@ -240,30 +245,32 @@ formatter self children =
             (AnonSemicolon, []) -> verbatim self
             (Spath, []) -> verbatim self
             (x, y) -> do
-              tell mempty { fallbackNodes = S.singleton self }
+              tellParent mempty { fallbackNodes = S.singleton self }
               verbatim self
 
 -- TODO: this currently breaks withIndent. The need for an output abstraction
 --       is discussed in a comment at Synthesized.
-newline :: TreeComp ()
+newline :: CnxFmt ()
 newline = do
-  ind <- asks indent
-  tell mempty { out = "\n" <> BB.byteString (BS.replicate ind (charCode ' ')) }
+  ind <- asksParent indent
+  write "\n"
+  write (BS.replicate ind (charCode ' '))
 
 -- TODO: replace by flexible space that can convert to newline
-space :: TreeComp ()
+space :: CnxFmt ()
 space =
-  tell mempty { out = " " }
+  write " "
 
-withIndent :: Int -> TreeComp a -> TreeComp a
+withIndent :: Int -> CnxFmt a -> CnxFmt a
 withIndent n m = do
-  local (\inh -> inh { indent = indent inh + n }) (newline *> m)
+  inh <- askParent
+  tellChildren (inh { indent = indent inh + n }) (newline *> m)
 
 -- | Indent except at top level
 -- Does put output on new line
-withOptionalIndent :: Int -> TreeComp a -> TreeComp a
+withOptionalIndent :: Int -> CnxFmt a -> CnxFmt a
 withOptionalIndent n m = do
-  tl <- asks indent
+  tl <- asksParent indent
   if (tl == 0) then (newline *> m) else withIndent n m
 
 charCode = fromIntegral . ord
@@ -290,11 +297,27 @@ rootPreceding = Preceding {}
 data Synthesized = Synthesized
   { unknownTypes :: Set String
   , fallbackNodes :: Set ANode
-  , out :: Builder
+
     -- TODO:
     --
-    -- Don't build the bytestring immediately but use something *slightly*
-    -- fancier. We can avoid a full blown pretty printing library, because
+    -- A synthesized attribute
+    --     singleline :: Maybe ByteString
+    -- which represents a formatted single-line variation of the subtree, or
+    -- Nothing when the line is too long, or if the original tree is multiline.
+    --
+    -- When a node isn't already known to be multiline because of multiline
+    -- input, this attribute is required for determining whether it should be,
+    -- based on the size of the subexpressions. That is - by checking its
+    -- own single-line output before streaming out the multiline output. This
+    -- can be achieved with CensorChildren.
+    --
+    --------------------------------------------------------------------------
+    --
+    -- Previous notes (for context, possibly outdated):
+    --
+    -- (we used to have out :: ByteString.Builder here in Synthesized)
+    --
+    -- We can avoid a full blown pretty printing library, because
     -- those are designed to do fancy 2D layouts, yet they are too syntax
     -- directed. What we typically want for merge-friendly layout is at
     -- most two layouts per given node type. A single-line one and a
@@ -354,12 +377,6 @@ data Synthesized = Synthesized
 instance Semigroup Synthesized where (<>) = gmappend
 instance Monoid Synthesized where { mappend = gmappend; mempty = gmempty }
 
--- Needs a newtype and is probably a bad idea anyway. We have no business
--- writing anything besides whitespace.
---instance IsString (TreeComp a) where
---  fromString s = tell mempty { out = fromString s }
-
-
 -- Cofree [] Node: rose tree (n-ary tree) with Node as the label for each node
 mkTree :: Node -> IO (Cofree [] Node)
 mkTree n = (n :<) <$> mkChildren
@@ -387,3 +404,78 @@ printNode ind source n@Node {..} = do
       end          = "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
   hPutStrLn stderr $ replicate ind ' ' ++ theType ++ start ++ "-" ++ end
   hPutStrLn stderr $ replicate ind ' ' ++ show (nodeInner source n)
+
+newtype Fmt inh syn o a = Fmt { fromFmt :: Free (FormatterEffect inh syn () o) a }
+  deriving (Functor, Applicative, Monad)
+
+runFmt :: Monoid syn => Fmt inh syn o a -> inh -> Progress o (Result syn () a)
+runFmt (Fmt m) inh = runFormatter m inh ()
+
+askParent :: Fmt inh syn o inh
+askParent = Fmt $ Free (AskParent pure)
+
+asksParent :: (inh -> a) -> Fmt inh syn o a
+asksParent f = Fmt $ Free $ AskParent $ pure . f
+
+tellChildren :: inh -> Fmt inh syn o a -> Fmt inh syn o a
+tellChildren inh (Fmt m) = Fmt $ Free $ TellChildren inh m
+
+
+censorChildren :: Monoid syn' => Fmt inh syn' o a -> (syn' -> a -> Fmt inh syn o b) -> Fmt inh syn o b
+censorChildren (Fmt m) f = Fmt $ Free $ CensorChildren m (\syn' a -> fromFmt $ f syn' a)
+
+tellParent :: syn -> Fmt inh syn o ()
+tellParent syn = Fmt $ Free $ TellParent syn (pure ())
+
+write :: o -> Fmt inh syn o ()
+write o = Fmt $ Free $ Write o (pure ())
+
+--censorChildren :: Fmt inh syn o a -> Fmt inh syn o a
+
+-- TODO: when needs of formatter are known to be met, fuse with runFormatter,
+--       which means writing it as a newtype that resembles the runFormatter
+--       type, or use an equivalent monad transformer stack.
+--       Eliminating the FormatterEffect indirection should improve performance.
+data FormatterEffect inh syn sib o a
+  = AskParent (inh -> a)
+  | TellChildren inh a
+
+  | forall b syn'. Monoid syn' => CensorChildren (Free (FormatterEffect inh syn' sib o) b) (syn' -> b -> a)
+  | TellParent syn a
+
+  | Modify (sib -> (sib, a))
+
+  | Write o a
+
+deriving instance Functor (FormatterEffect inh syn sib o)
+
+data Progress o a = Step o (Progress o a) | Done a
+  deriving (Functor, Show)
+data Result syn sib a = Result { resultSyn :: syn, resultSib :: sib, resultValue :: a }
+  deriving (Functor, Show)
+
+runFormatter :: Monoid syn => Free (FormatterEffect inh syn sib o) a -> inh -> sib -> Progress o (Result syn sib a)
+runFormatter (Pure a) _inh sib = Done (Result mempty sib a)
+
+ -- top-down
+runFormatter (Free (AskParent f)) inh sib = runFormatter (f inh) inh sib
+runFormatter (Free (TellChildren inh' f)) _inh sib = runFormatter f inh' sib
+
+ -- bottom-up
+runFormatter (Free (CensorChildren sub f)) inh sib =
+  let
+    subProgress = runFormatter sub inh sib
+    go (Step a p) = Step a (go p)
+    go (Done t) = runFormatter (f (resultSyn t) (resultValue t)) inh (resultSib t)
+  in go subProgress
+runFormatter (Free (TellParent syn a)) inh sib = (\r -> r { resultSyn = syn <> resultSyn r }) <$> runFormatter a inh sib
+
+ -- left-to-right (beginning of file to end of file, sort of like preorder but
+ --                allowing to 'revisit' the parent before moving on)
+ --               (chaining in attribute grammars)
+runFormatter (Free Modify {}) _ _ = error "not implemented"
+
+ -- streaming output
+runFormatter (Free (Write o a)) inh sib =
+  let x = runFormatter a inh sib
+  in Step o x
