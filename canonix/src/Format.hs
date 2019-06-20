@@ -121,7 +121,7 @@ formatter self children =
   case (typ self, map (\(node, comp) -> (typ node, comp)) children) of
             (Expression, _) -> do
               mconcat <$> traverse snd children
-              -- pure $ mconcat (map snd children)
+              newline
 
               -- TODO: This doesn't match comments. Not the end of the world, due
               --       to the verbatim fallback, but adding it in these pattern
