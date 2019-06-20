@@ -119,6 +119,7 @@ verbatim n = do
 formatter :: ANode -> [(ANode, CnxFmt ())] -> CnxFmt ()
 formatter self children =
   case (typ self, map (\(node, comp) -> (typ node, comp)) children) of
+            -- Expression is the root node of a file
             (Expression, _) -> do
               mconcat <$> traverse snd children
               newline
