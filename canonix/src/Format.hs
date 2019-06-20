@@ -244,6 +244,10 @@ formatter self children =
             (AnonQuestion, []) -> verbatim self
             (AnonSemicolon, []) -> verbatim self
             (Spath, []) -> verbatim self
+            (Comment, []) -> do
+              newline
+              verbatim self
+              newline
             (x, y) -> do
               tellParent mempty { fallbackNodes = S.singleton self }
               verbatim self
@@ -281,18 +285,6 @@ data Inherited = Inherited
   }
 rootInherited :: ByteString -> Inherited
 rootInherited bs = Inherited { indent = 0, source = bs }
-
--- TODO: Add support for ranges where formatting is disabled here in Preceding.
---       Probably as simple as a Bool here that is set and read as appropriate.
---       It can be closed explicitly like `/*nofmt*/ stuff /*dofmt*/`, or just
---       `/*nofmt*/ stuff`. Perhaps the implicit-looking approach is better here
---       because you can't forget to close it and with the explicit closing it
---       may be impossible to make the parent not interfere with a range that
---       consists of multitple nodes in that parent.
-data Preceding = Preceding
-  {}
-rootPreceding :: Preceding
-rootPreceding = Preceding {}
 
 data Synthesized = Synthesized
   { unknownTypes :: Set String
