@@ -244,6 +244,10 @@ formatter self children =
             (AnonQuestion, []) -> verbatim self
             (AnonSemicolon, []) -> verbatim self
             (Spath, []) -> verbatim self
+            (Comment, []) -> do
+              newline
+              verbatim self
+              newline
             (x, y) -> do
               tellParent mempty { fallbackNodes = S.singleton self }
               verbatim self
