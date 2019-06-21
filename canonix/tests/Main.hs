@@ -1,29 +1,40 @@
+module Main
+  ( main
+  )
+where
+
+import           Control.Monad                  ( forM_ )
+import           Control.Monad.IO.Class         ( liftIO )
+import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Lazy          as BL
+import           Data.List                      ( isSuffixOf )
+import           Format                         ( format )
+import           Paths_canonix                  ( getDataFileName )
+import           System.Directory               ( listDirectory )
 import           Test.Hspec
-import           Paths_canonix (getDataFileName)
-import           Format (format)
-import           System.Directory (listDirectory)
-import           Control.Monad (forM_)
-import           Data.List (isSuffixOf)
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Lazy as BL
 
 
 main :: IO ()
-main = hspec $ do
-  describe "formatter" $ do
-    it "passes all golden tests" $ do
-      runGoldenTests "tests/golden/" (format False)
+main = do
+  t <- describeGoldenTests "tests/golden/" (format False)
+  hspec $ do
+    describe "formatter" $ do
+      describe "golden tests" $ do
+        t
 
-
-runGoldenTests :: FilePath -> (BS.ByteString -> IO BL.ByteString) -> Expectation
-runGoldenTests reldir f = do
-  dir <- getDataFileName reldir
-  files <- filter (".input.nix" `isSuffixOf`) <$> listDirectory dir
-  forM_ files $ \file -> do
-    input <- BS.readFile (dir <> file)
-    output <- f input
-    expected <- BL.readFile (dir <> outputFile file)
-    output `shouldBe` expected
-  where
-    outputFile path =
-      take (length path - 10) path <> ".output.nix"
+describeGoldenTests
+  :: FilePath -> (BS.ByteString -> IO BL.ByteString) -> IO Spec
+describeGoldenTests reldir f = do
+  dir   <- liftIO $ getDataFileName reldir
+  files <- filter (".input.nix" `isSuffixOf`) <$> liftIO (listDirectory dir)
+  pure $ do
+    it "are found" $ do
+      length files >= 1 `shouldBe` True
+    forM_ files $ \file -> do
+      let basename   = take (length file - 10) file
+          outputFile = basename <> ".output.nix"
+      it basename $ do
+        input    <- BS.readFile (dir <> file)
+        output   <- f input
+        expected <- BL.readFile (dir <> outputFile)
+        output `shouldBe` expected
