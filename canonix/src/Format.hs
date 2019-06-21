@@ -11,15 +11,11 @@ import           Control.Comonad.Cofree
 import qualified Control.Comonad.Trans.Cofree as T
 import           Control.Monad
 import           Control.Monad.Free
-import           Control.Monad.Identity
-import           Control.Monad.RWS
-import           Control.Monad.State
 import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
 import           Data.ByteString.Builder        ( Builder )
 import qualified Data.ByteString.Builder       as BB
 import qualified Data.ByteString.Lazy          as BL
-import qualified Data.ByteString.UTF8          as BU
 import           Data.Char (ord)
 import           Data.Functor.Foldable
 import           Data.List ((\\))
