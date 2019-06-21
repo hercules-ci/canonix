@@ -29,6 +29,7 @@ module Canonix.Monad
 
     -- * Stream-like output with exceptions
   , write
+  , censorWrites
   , throw
 
   ) where
@@ -59,6 +60,9 @@ tellParent syn = Fmt $ Free $ TellParent syn (pure ())
 write :: o -> Fmt inh syn o e ()
 write o = Fmt $ Free $ Write o (pure ())
 
+censorWrites :: Fmt inh syn o' e a -> ([o'] -> a -> Fmt inh syn o e b) -> Fmt inh syn o e b
+censorWrites (Fmt m) f = Fmt $ Free $ CensorWrites m (\o's a -> fromFmt $ f o's a)
+
 throw :: e -> Fmt inh syn o e a
 throw e = Fmt $ Free $ Throw e
 
@@ -76,6 +80,7 @@ data FormatterEffect inh syn sib o e a
   | Modify (sib -> (sib, a))
 
   | Write o a
+  | forall b o'. CensorWrites (Free (FormatterEffect inh syn sib o' e) b) ([o'] -> b -> a)
   | Throw e
 
 deriving instance Functor (FormatterEffect inh syn sib o e)
@@ -111,5 +116,12 @@ runFormatter (Free Modify {}) _ _ = error "not implemented"
 runFormatter (Free (Write o a)) inh sib =
   let x = runFormatter a inh sib
   in Step o x
+runFormatter (Free (CensorWrites sub f)) inh sib =
+  let
+    subProgress = runFormatter sub inh sib
+    go acc (Step a p) = go (acc . (a:)) p
+    go _ac (Exceptional e) = Exceptional e
+    go acc (Done t) = runFormatter (Free (TellParent (resultSyn t) $ f (acc []) (resultValue t))) inh (resultSib t)
+  in go id subProgress
 runFormatter (Free (Throw e)) _inh _sib =
   Exceptional e

@@ -12,7 +12,8 @@ import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as BB
 import qualified Data.ByteString.Lazy          as BL
-import           Data.Char (ord)
+import           Data.Char                      ( ord )
+import           Data.Monoid                    ( Ap(Ap) )
 import           Data.Functor.Foldable
 import           Data.Semigroup.Generic
 import           Data.Set                       ( Set )
@@ -108,10 +109,46 @@ verbatim n = do
   src <- asksParent source
   let bs = BS.drop (startByte n) (BS.take (endByte n) src)
   write bs
+  _ <- whenSingleLineAllowed $ do
+    rw <- asksParent remainingWidth
+    tellParent mempty { singleLine = bs <$ guard (BS.length bs <= rw) }
   pure ()
 
+whenSingleLineAllowed :: CnxFmt a -> CnxFmt (Maybe a)
+whenSingleLineAllowed fmt = do
+  allowed <- asksParent singleLineAllowed
+  forM (guard allowed) (const fmt)
+
+trySingleLine :: CnxFmt a -> CnxFmt a
+trySingleLine fmt = do
+  allowed <- asksParent singleLineAllowed
+  if not allowed then fmt
+  else do
+    rw      <- asksParent remainingWidth
+    censorWrites (censorChildren fmt $ \syn a -> do
+      let
+        ln :: Ap Maybe ByteString
+        ln = do
+          l0 <- singleLine syn
+          -- rely on fusion
+          let l1 = BS.reverse . BS.dropWhile (== charCode ' ') . BS.reverse $ l0
+          guard (BS.length l1 <= rw) -- TODO: unicode width
+          pure l1
+
+      (ln, a) <$ tellParent (syn { singleLine = ln })
+      ) $ \multilineChunks (ln, a) -> do
+      case ln of
+        Ap (Just l) -> write l
+        _ -> mapM_ write multilineChunks
+      pure a
+
+withSelf :: ANode -> CnxFmt () -> CnxFmt ()
+withSelf self fmt = do
+  inh <- askParent
+  tellChildren inh { singleLineAllowed = not (isMultiline self) } fmt
+
 formatter :: ANode -> [(ANode, CnxFmt ())] -> CnxFmt ()
-formatter self children =
+formatter self children = withSelf self $ trySingleLine $
   case (typ self, map (\(node, comp) -> (typ node, comp)) children) of
             -- Expression is the root node of a file
             (Expression, _) -> do
@@ -254,11 +291,15 @@ newline = do
   ind <- asksParent indent
   write "\n"
   write (BS.replicate ind (charCode ' '))
+  void $ whenSingleLineAllowed $
+    tellParent mempty { singleLine = pure " " }
 
 -- TODO: replace by flexible space that can convert to newline
 space :: CnxFmt ()
-space =
+space = do
   write " "
+  void $ whenSingleLineAllowed $
+    tellParent mempty { singleLine = pure " " }
 
 withIndent :: Int -> CnxFmt a -> CnxFmt a
 withIndent n m = do
@@ -278,27 +319,32 @@ charCode = fromIntegral . ord
 data Inherited = Inherited
   { indent :: Int
   , source :: ByteString
+  , singleLineAllowed :: Bool
   }
 rootInherited :: ByteString -> Inherited
-rootInherited bs = Inherited { indent = 0, source = bs }
+rootInherited bs = Inherited { indent = 0, source = bs, singleLineAllowed = False }
+
+remainingWidth :: Inherited -> Int
+remainingWidth inh = max 30 (78 - indent inh)
 
 data Synthesized = Synthesized
   { unknownTypes :: Set String
   , fallbackNodes :: Set ANode
-
-    -- TODO:
-    --
-    -- A synthesized attribute
-    --     singleline :: Maybe ByteString
-    -- which represents a formatted single-line variation of the subtree, or
+  , singleLine :: Ap Maybe ByteString
+    -- ^
+    -- singleLine represents a formatted single-line variation of the subtree, or
     -- Nothing when the line is too long, or if the original tree is multiline.
     --
     -- When a node isn't already known to be multiline because of multiline
     -- input, this attribute is required for determining whether it should be,
     -- based on the size of the subexpressions. That is - by checking its
-    -- own single-line output before streaming out the multiline output. This
-    -- can be achieved with CensorChildren.
-    --
+    -- own single-line output before streaming out the multiline output.
+  }
+  deriving (Generic, Show)
+instance Semigroup Synthesized where (<>) = gmappend
+instance Monoid Synthesized where { mappend = gmappend; mempty = gmempty }
+
+    -- TODO: Turn these considerations into design document
     --------------------------------------------------------------------------
     --
     -- Previous notes (for context, possibly outdated):
@@ -322,9 +368,9 @@ data Synthesized = Synthesized
     --
     --  {                          {
     --    a = lineTooLong;           a =
-    --    b = false;                   oneOrMoreLines;
+    --    b = short;                   oneOrMoreLines;
     --  }                            b =
-    --    potential extra   ------>    false;
+    --    potential extra   ------>    short;
     --       conflict              }
     --
     -- The right hand side looks nicer, but does introduce an extra conflict
@@ -360,10 +406,6 @@ data Synthesized = Synthesized
     -- count UTF8 code points to make it nice. (I know code points aren't
     -- glyphs, but you have to draw a line - what's the width of a 'glyph'
     -- anyway?)
-  }
-  deriving Generic
-instance Semigroup Synthesized where (<>) = gmappend
-instance Monoid Synthesized where { mappend = gmappend; mempty = gmempty }
 
 -- Cofree [] Node: rose tree (n-ary tree) with Node as the label for each node
 mkTree :: Node -> IO (Cofree [] Node)
