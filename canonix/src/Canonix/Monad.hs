@@ -27,8 +27,9 @@ module Canonix.Monad
   , censorChildren
   , tellParent
 
-    -- * Stream-like output
+    -- * Stream-like output with exceptions
   , write
+  , throw
 
   ) where
 
@@ -69,53 +70,57 @@ import           TreeSitter.Node
 import           TreeSitter.Parser
 import           TreeSitter.Tree
 
-newtype Fmt inh syn o a = Fmt { fromFmt :: Free (FormatterEffect inh syn () o) a }
+newtype Fmt inh syn o e a = Fmt { fromFmt :: Free (FormatterEffect inh syn () o e) a }
   deriving (Functor, Applicative, Monad)
 
-runFmt :: Monoid syn => Fmt inh syn o a -> inh -> Progress o (Result syn () a)
+runFmt :: Monoid syn => Fmt inh syn o e a -> inh -> Progress o e (Result syn () a)
 runFmt (Fmt m) inh = runFormatter m inh ()
 
-askParent :: Fmt inh syn o inh
+askParent :: Fmt inh syn o e inh
 askParent = Fmt $ Free (AskParent pure)
 
-asksParent :: (inh -> a) -> Fmt inh syn o a
+asksParent :: (inh -> a) -> Fmt inh syn o e a
 asksParent f = Fmt $ Free $ AskParent $ pure . f
 
-tellChildren :: inh -> Fmt inh syn o a -> Fmt inh syn o a
+tellChildren :: inh -> Fmt inh syn o e a -> Fmt inh syn o e a
 tellChildren inh (Fmt m) = Fmt $ Free $ TellChildren inh m
 
-censorChildren :: Monoid syn' => Fmt inh syn' o a -> (syn' -> a -> Fmt inh syn o b) -> Fmt inh syn o b
+censorChildren :: Monoid syn' => Fmt inh syn' o e a -> (syn' -> a -> Fmt inh syn o e b) -> Fmt inh syn o e b
 censorChildren (Fmt m) f = Fmt $ Free $ CensorChildren m (\syn' a -> fromFmt $ f syn' a)
 
-tellParent :: syn -> Fmt inh syn o ()
+tellParent :: syn -> Fmt inh syn o e ()
 tellParent syn = Fmt $ Free $ TellParent syn (pure ())
 
-write :: o -> Fmt inh syn o ()
+write :: o -> Fmt inh syn o e ()
 write o = Fmt $ Free $ Write o (pure ())
+
+throw :: e -> Fmt inh syn o e a
+throw e = Fmt $ Free $ Throw e
 
 -- TODO: when needs of formatter are known to be met, fuse with runFormatter,
 --       which means writing it as a newtype that resembles the runFormatter
 --       type, or use an equivalent monad transformer stack.
 --       Eliminating the FormatterEffect indirection should improve performance.
-data FormatterEffect inh syn sib o a
+data FormatterEffect inh syn sib o e a
   = AskParent (inh -> a)
   | TellChildren inh a
 
-  | forall b syn'. Monoid syn' => CensorChildren (Free (FormatterEffect inh syn' sib o) b) (syn' -> b -> a)
+  | forall b syn'. Monoid syn' => CensorChildren (Free (FormatterEffect inh syn' sib o e) b) (syn' -> b -> a)
   | TellParent syn a
 
   | Modify (sib -> (sib, a))
 
   | Write o a
+  | Throw e
 
-deriving instance Functor (FormatterEffect inh syn sib o)
+deriving instance Functor (FormatterEffect inh syn sib o e)
 
-data Progress o a = Step o (Progress o a) | Done a
+data Progress o e a = Step o (Progress o e a) | Exceptional e | Done a
   deriving (Functor, Show)
 data Result syn sib a = Result { resultSyn :: syn, resultSib :: sib, resultValue :: a }
   deriving (Functor, Show)
 
-runFormatter :: Monoid syn => Free (FormatterEffect inh syn sib o) a -> inh -> sib -> Progress o (Result syn sib a)
+runFormatter :: Monoid syn => Free (FormatterEffect inh syn sib o e) a -> inh -> sib -> Progress o e (Result syn sib a)
 runFormatter (Pure a) _inh sib = Done (Result mempty sib a)
 
  -- top-down

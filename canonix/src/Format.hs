@@ -66,11 +66,17 @@ format debug source = do
     tree <- mkTree root
     let f = bottomUp (fmap abstract tree) formatter
 
-    let go (Step chunk tail) = (BB.byteString chunk <> cs, r) where (cs, r) = go tail
-        go (Done r) = pure r
+    let go (Step chunk tail) = do  -- Either
+           (cs, r) <- go tail
+           pure (BB.byteString chunk <> cs, r)
+        go (Exceptional e) = Left e
+        go (Done r) = pure (pure r)
 
-        (blob, r) = go (runFmt (snd f) $ rootInherited source)
-        synthesized = resultSyn r
+    (blob, r) <- case go (runFmt (snd f) $ rootInherited source) of
+      Left e -> error e  -- TODO use proper IO exception instead of pure exception
+      Right x -> pure x
+
+    let synthesized = resultSyn r
 
     -- NB: debug forces the tree before the lazy bytestring does it
     when debug $ do
@@ -100,7 +106,9 @@ abstract n =
     , isMultiline = pointRow (nodeStartPoint n) /= pointRow (nodeEndPoint n)
     }
 
-type CnxFmt = Fmt Inherited Synthesized ByteString
+type ErrorMessage = String
+
+type CnxFmt = Fmt Inherited Synthesized ByteString ErrorMessage
 
 verbatim :: ANode -> CnxFmt ()
 verbatim n = do
