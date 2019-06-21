@@ -8,23 +8,17 @@ import           Canonix.Monad
 import           Control.Comonad.Cofree
 import qualified Control.Comonad.Trans.Cofree as T
 import           Control.Monad
-import           Control.Monad.Free
 import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
-import           Data.ByteString.Builder        ( Builder )
 import qualified Data.ByteString.Builder       as BB
 import qualified Data.ByteString.Lazy          as BL
 import           Data.Char (ord)
 import           Data.Functor.Foldable
-import           Data.List ((\\))
 import           Data.Semigroup.Generic
 import           Data.Set                       ( Set )
 import qualified Data.Set                      as S
-import           Data.String
+import           Data.Word                      ( Word8 )
 import           Foreign.C
-import           Foreign.C.String
-import           Foreign.C.Types
-import           Foreign.ForeignPtr
 import           Foreign.Marshal.Alloc          ( malloc )
 import           Foreign.Marshal.Array          ( peekArray
                                                 , allocaArray
@@ -34,8 +28,6 @@ import           Foreign.Ptr                    ( nullPtr )
 import           Foreign.Storable               ( peek )
 import           GHC.Generics
 import           System.IO
-import           System.IO.Unsafe
-import           TreeSitter.Language
 import           TreeSitter.Nix
 import           TreeSitter.Node
 import           TreeSitter.Parser
@@ -44,30 +36,30 @@ import           TreeSitter.Tree
 format :: Bool -> ByteString -> IO BL.ByteString
 format debug source = do
   parser <- ts_parser_new
-  ts_parser_set_language parser tree_sitter_nix
+  _ <- ts_parser_set_language parser tree_sitter_nix
 
   BS.useAsCStringLen source $ \(str, len) -> do
 
-    tree       <- ts_parser_parse_string parser nullPtr str len
+    ttree       <- ts_parser_parse_string parser nullPtr str len
 
     n          <- malloc
-    ts_tree_root_node_p tree n
+    ts_tree_root_node_p ttree n
 
     root@Node {..} <- peek n
 
     let
       dump :: Int -> Node -> IO ()
-      dump i n = do
-        printNode i source n
-        void $ forChildren n $ \c ->
+      dump i nd = do
+        printNode i source nd
+        void $ forChildren nd $ \c ->
           dump (i+1) c
     when debug $ dump 0 root
 
     tree <- mkTree root
     let f = bottomUp (fmap abstract tree) formatter
 
-    let go (Step chunk tail) = do  -- Either
-           (cs, r) <- go tail
+    let go (Step chunk tl) = do  -- Either
+           (cs, r) <- go tl
            pure (BB.byteString chunk <> cs, r)
         go (Exceptional e) = Left e
         go (Done r) = pure (pure r)
@@ -98,6 +90,7 @@ data ANode = ANode
   , isMultiline :: !Bool -- TODO: maybe preserve line numbers instead so we can figure out which parts of a construct are multiline
   } deriving (Eq, Ord, Show)
 
+abstract :: Node -> ANode
 abstract n =
   ANode
     { typ = toEnum (fromEnum (nodeSymbol n))
@@ -113,8 +106,7 @@ type CnxFmt = Fmt Inherited Synthesized ByteString ErrorMessage
 verbatim :: ANode -> CnxFmt ()
 verbatim n = do
   src <- asksParent source
-  let bb = BB.byteString bs
-      bs = BS.drop (startByte n) (BS.take (endByte n) src)
+  let bs = BS.drop (startByte n) (BS.take (endByte n) src)
   write bs
   pure ()
 
@@ -158,9 +150,9 @@ formatter self children =
               withOptionalIndent 2 $ do
                 body
 
-            (Formals, (AnonLBracket, open):children) -> do
+            (Formals, (AnonLBracket, open):ch) -> do
               open
-              void $ traverse snd children
+              void $ traverse snd ch
 
             (Formal, [(Identifier, i)]) -> do
               i
@@ -251,7 +243,7 @@ formatter self children =
               newline
               verbatim self
               newline
-            (x, y) -> do
+            (_x, _y) -> do
               tellParent mempty { fallbackNodes = S.singleton self }
               verbatim self
 
@@ -280,6 +272,7 @@ withOptionalIndent n m = do
   tl <- asksParent indent
   if (tl == 0) then (newline *> m) else withIndent n m
 
+charCode :: Char -> Word8
 charCode = fromIntegral . ord
 
 data Inherited = Inherited
@@ -393,9 +386,11 @@ nodeInner bs n =
 printNode :: Int -> BS.ByteString -> Node -> IO ()
 printNode ind source n@Node {..} = do
   theType <- peekCString nodeType
-  let TSPoint {..} = nodeStartPoint
-      start        = "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
-  let TSPoint {..} = nodeEndPoint
-      end          = "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
+  let start =
+        let TSPoint {..} = nodeStartPoint
+        in  "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
+      end =
+        let TSPoint {..} = nodeEndPoint
+        in  "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
   hPutStrLn stderr $ replicate ind ' ' ++ theType ++ start ++ "-" ++ end
   hPutStrLn stderr $ replicate ind ' ' ++ show (nodeInner source n)

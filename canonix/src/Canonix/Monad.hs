@@ -33,42 +33,7 @@ module Canonix.Monad
 
   ) where
 
-
-import           Control.Comonad.Cofree
-import qualified Control.Comonad.Trans.Cofree as T
-import           Control.Monad
 import           Control.Monad.Free
-import           Data.ByteString                ( ByteString )
-import qualified Data.ByteString               as BS
-import           Data.ByteString.Builder        ( Builder )
-import qualified Data.ByteString.Builder       as BB
-import qualified Data.ByteString.Lazy          as BL
-import           Data.Char (ord)
-import           Data.Functor.Foldable
-import           Data.List ((\\))
-import           Data.Semigroup.Generic
-import           Data.Set                       ( Set )
-import qualified Data.Set                      as S
-import           Data.String
-import           Foreign.C
-import           Foreign.C.String
-import           Foreign.C.Types
-import           Foreign.ForeignPtr
-import           Foreign.Marshal.Alloc          ( malloc )
-import           Foreign.Marshal.Array          ( peekArray
-                                                , allocaArray
-                                                )
-import           Foreign.Marshal.Utils          ( with )
-import           Foreign.Ptr                    ( nullPtr )
-import           Foreign.Storable               ( peek )
-import           GHC.Generics
-import           System.IO
-import           System.IO.Unsafe
-import           TreeSitter.Language
-import           TreeSitter.Nix
-import           TreeSitter.Node
-import           TreeSitter.Parser
-import           TreeSitter.Tree
 
 newtype Fmt inh syn o e a = Fmt { fromFmt :: Free (FormatterEffect inh syn () o e) a }
   deriving (Functor, Applicative, Monad)
@@ -132,6 +97,7 @@ runFormatter (Free (CensorChildren sub f)) inh sib =
   let
     subProgress = runFormatter sub inh sib
     go (Step a p) = Step a (go p)
+    go (Exceptional e) = Exceptional e
     go (Done t) = runFormatter (f (resultSyn t) (resultValue t)) inh (resultSib t)
   in go subProgress
 runFormatter (Free (TellParent syn a)) inh sib = (\r -> r { resultSyn = syn <> resultSyn r }) <$> runFormatter a inh sib
@@ -145,3 +111,5 @@ runFormatter (Free Modify {}) _ _ = error "not implemented"
 runFormatter (Free (Write o a)) inh sib =
   let x = runFormatter a inh sib
   in Step o x
+runFormatter (Free (Throw e)) _inh _sib =
+  Exceptional e

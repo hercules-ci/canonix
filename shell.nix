@@ -1,4 +1,7 @@
 { pkgs ? import ./nix {} }:
+let
+  hs = pkgs.canonixHaskellPackages;
+in
 pkgs.canonixHaskellPackages.shellFor {
   name = "dev-shell";
 
@@ -7,6 +10,10 @@ pkgs.canonixHaskellPackages.shellFor {
 
   buildInputs = [
     pkgs.niv
-    pkgs.cabal-install
+    hs.cabal-install
+    hs.ghcid
   ];
+
+  # stack hardcodes <nixpkgs>; possibly other tools
+  NIX_PATH = "nixpkgs=${pkgs.path}";
 }

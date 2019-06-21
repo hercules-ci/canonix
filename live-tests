@@ -1,0 +1,9 @@
+#!/usr/bin/env nix-shell
+#!nix-shell -i bash
+
+cd "$(dirname ${BASH_SOURCE[0]})/canonix"
+exec ghcid \
+  --command='cabal new-repl test:canonix-tests' \
+  --test=Main.main \
+  --reload=tests/ \
+  ;
