@@ -33,6 +33,11 @@ import           TreeSitter.Nix
 import           TreeSitter.Node
 import           TreeSitter.Parser
 import           TreeSitter.Tree
+-- import Debug.Trace (trace)
+
+traceDemand :: String -> a -> a
+traceDemand = flip const  -- folds away the debug statements
+-- traceDemand = trace  -- should show an interleaving of Chunk production and Node demand
 
 format :: Bool -> ByteString -> IO BL.ByteString
 format debug source = do
@@ -57,11 +62,29 @@ format debug source = do
     when debug $ dump 0 root
 
     tree <- mkTree root
-    let f = bottomUp (fmap abstract tree) formatter
+    let f = bottomUp (fmap (lg . abstract) tree) formatter
+        lg nd = traceDemand ("Demanding " <> show nd) nd
 
-    let go (Step chunk tl) = do  -- Either
+    let go (Step chunk0 tl) = do  -- Either
+           let chunk = traceDemand ("Chunk completed (" <> show chunk0 <> ")") chunk0
+           -- Demanding chunks strictly should help to keep active memory small.
+           -- They will be gathered up in memory, but that's unavoidable
+           -- because checking for exceptions is strict and we don't want/need
+           -- to write partial files.
+           --
+           -- When this statement is omitted, the pattern match on the final
+           -- Either will cause the whole Fmt to be loaded into memory, which
+           -- is a big data structure with many thunks in it. Makes those few
+           -- output bytes insignificant.
+           chunk `seq` pure ()
            (cs, r) <- go tl
-           pure (BB.byteString chunk <> cs, r)
+           let cs' = BB.byteString chunk <> cs
+
+           -- Either of these seqs should independently do the trick, but
+           --   - the one above makes trace message interleaving nicely granular
+           --   - this one compacts the loose chunks into contiguous memory
+           cs' `seq` pure ()
+           pure (cs', r)
         go (Exceptional e) = Left e
         go (Done r) = pure (pure r)
 
