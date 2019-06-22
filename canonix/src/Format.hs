@@ -141,6 +141,9 @@ whenSingleLineAllowed fmt = do
   allowed <- asksParent singleLineAllowed
   forM (guard allowed) (const fmt)
 
+forceMultiline :: CnxFmt ()
+forceMultiline = tellParent mempty { singleLine = Ap Nothing }
+
 trySingleLine :: CnxFmt a -> CnxFmt a
 trySingleLine fmt = do
   allowed <- asksParent singleLineAllowed
@@ -175,7 +178,7 @@ formatter self children = withSelf self $ trySingleLine $
             -- Expression is the root node of a file
             (Expression, _) -> do
               mconcat <$> traverse snd children
-              newline
+              forceNewline
 
               -- TODO: This doesn't match comments. Not the end of the world, due
               --       to the verbatim fallback, but adding it in these pattern
@@ -249,7 +252,6 @@ formatter self children = withSelf self $ trySingleLine $
               a
               space
               eq1
-              space
               withIndent 2 $ do
                 v
                 sc
@@ -273,13 +275,16 @@ formatter self children = withSelf self $ trySingleLine $
               sc
               newline
 
-            (Attrset, (AnonLBracket, open):rest)
+            (Attrset, (AnonLBrace, open):rest)
               | (bindings, rest') <- span (\(x, _) -> x == Bind || x == Inherit) rest
-              , [(AnonRBracket, close)] <- rest'
+              , [(AnonRBrace, close)] <- rest'
               -> do
               open
-              withIndent 2 $
-                void $ traverse snd bindings
+              withIndent' 2 $ do
+                forM_ bindings $ \(_, i) -> do
+                  newline
+                  i
+              newline -- ??
               close
 
             (Attrs, as) | all (\(x, _) -> x == Identifier) as -> do
@@ -289,6 +294,8 @@ formatter self children = withSelf self $ trySingleLine $
 
             (AnonRBracket, []) -> verbatim self
             (AnonLBracket, []) -> verbatim self
+            (AnonRBrace, []) -> verbatim self
+            (AnonLBrace, []) -> verbatim self
             (AnonColon, []) -> verbatim self
             (Identifier, []) -> verbatim self
             (AnonEqual, []) -> verbatim self
@@ -298,8 +305,10 @@ formatter self children = withSelf self $ trySingleLine $
             (AnonQuestion, []) -> verbatim self
             (AnonSemicolon, []) -> verbatim self
             (Spath, []) -> verbatim self
+            (Integer, []) -> verbatim self
             (Comment, []) -> do
-              newline
+              forceMultiline
+              newline -- TODO: clearline
               verbatim self
               newline
             (_x, _y) -> do
@@ -316,6 +325,17 @@ newline = do
   void $ whenSingleLineAllowed $
     tellParent mempty { singleLine = pure " " }
 
+-- This is only used by Expression (top-level)
+-- A better way to solve this is add the final newline outside the recursive
+-- format function.
+forceNewline :: CnxFmt ()
+forceNewline = do
+  ind <- asksParent indent
+  write "\n"
+  write (BS.replicate ind (charCode ' '))
+  void $ whenSingleLineAllowed $
+    tellParent mempty { singleLine = pure "\n" }
+
 -- TODO: replace by flexible space that can convert to newline
 space :: CnxFmt ()
 space = do
@@ -327,6 +347,11 @@ withIndent :: Int -> CnxFmt a -> CnxFmt a
 withIndent n m = do
   inh <- askParent
   tellChildren (inh { indent = indent inh + n }) (newline *> m)
+
+withIndent' :: Int -> CnxFmt a -> CnxFmt a
+withIndent' n m = do
+  inh <- askParent
+  tellChildren (inh { indent = indent inh + n }) m
 
 -- | Indent except at top level
 -- Does put output on new line

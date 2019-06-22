@@ -16,7 +16,8 @@ import           Test.Hspec
 
 main :: IO ()
 main = do
-  t <- describeGoldenTests "tests/golden/" (format False)
+  let debug = False
+  t <- describeGoldenTests "tests/golden/" (format debug)
   hspec $ do
     describe "formatter" $ do
       describe "golden tests" $ do
