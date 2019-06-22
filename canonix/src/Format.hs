@@ -126,24 +126,19 @@ type ErrorMessage = String
 
 type CnxFmt = Fmt Inherited Synthesized ByteString ErrorMessage
 
-verbatim :: ANode -> CnxFmt ()
-verbatim n = do
-  src <- asksParent source
-  let bs = BS.drop (startByte n) (BS.take (endByte n) src)
-  write bs
-  _ <- whenSingleLineAllowed $ do
-    rw <- asksParent remainingWidth
-    tellParent mempty { singleLine = bs <$ guard (BS.length bs <= rw) }
-  pure ()
-
+-- | Runs its argument only if outputting a single line is a possibility.
 whenSingleLineAllowed :: CnxFmt a -> CnxFmt (Maybe a)
 whenSingleLineAllowed fmt = do
   allowed <- asksParent singleLineAllowed
   forM (guard allowed) (const fmt)
 
+-- | Declare that the single-line format has failed, ensuring that the
+-- multiline-style output will be written.
 forceMultiline :: CnxFmt ()
 forceMultiline = tellParent mempty { singleLine = Ap Nothing }
 
+-- | Try to use the single line format. This is how the multiline format can
+-- use the single line format.
 trySingleLine :: CnxFmt a -> CnxFmt a
 trySingleLine fmt = do
   allowed <- asksParent singleLineAllowed
@@ -167,6 +162,7 @@ trySingleLine fmt = do
         _ -> mapM_ write multilineChunks
       pure a
 
+-- | Tell the children what they need to know from their parent.
 withSelf :: ANode -> CnxFmt () -> CnxFmt ()
 withSelf self fmt = do
   inh <- askParent
@@ -315,8 +311,7 @@ formatter self children = withSelf self $ trySingleLine $
               tellParent mempty { fallbackNodes = S.singleton self }
               verbatim self
 
--- TODO: this currently breaks withIndent. The need for an output abstraction
---       is discussed in a comment at Synthesized.
+-- | A newline in multiline format, but a space in single line format
 newline :: CnxFmt ()
 newline = do
   ind <- asksParent indent
@@ -336,25 +331,39 @@ forceNewline = do
   void $ whenSingleLineAllowed $
     tellParent mempty { singleLine = pure "\n" }
 
--- TODO: replace by flexible space that can convert to newline
+-- | Copy a node to the output without any changes
+verbatim :: ANode -> CnxFmt ()
+verbatim n = do
+  src <- asksParent source
+  let bs = BS.drop (startByte n) (BS.take (endByte n) src)
+  write bs
+  _ <- whenSingleLineAllowed $ do
+    rw <- asksParent remainingWidth
+    tellParent mempty { singleLine = bs <$ guard (BS.length bs <= rw) }
+  pure ()
+
+-- | Just a space
 space :: CnxFmt ()
 space = do
   write " "
   void $ whenSingleLineAllowed $
     tellParent mempty { singleLine = pure " " }
 
+-- | Adds a newline and starts an indented block.
 withIndent :: Int -> CnxFmt a -> CnxFmt a
 withIndent n m = do
   inh <- askParent
   tellChildren (inh { indent = indent inh + n }) (newline *> m)
 
+-- | Declare increased indentation while appending to the current line
 withIndent' :: Int -> CnxFmt a -> CnxFmt a
 withIndent' n m = do
   inh <- askParent
   tellChildren (inh { indent = indent inh + n }) m
 
--- | Indent except at top level
--- Does put output on new line
+-- | Indent except at top level.
+--
+-- Always creates a new line, like 'withIndent'.
 withOptionalIndent :: Int -> CnxFmt a -> CnxFmt a
 withOptionalIndent n m = do
   tl <- asksParent indent
