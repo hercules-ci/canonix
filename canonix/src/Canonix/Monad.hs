@@ -49,7 +49,7 @@ asksParent :: (inh -> a) -> Fmt inh syn o e a
 asksParent f = Fmt $ Free $ AskParent $ pure . f
 
 tellChildren :: inh -> Fmt inh syn o e a -> Fmt inh syn o e a
-tellChildren inh (Fmt m) = Fmt $ Free $ TellChildren inh m
+tellChildren inh (Fmt m) = Fmt $ Free $ TellChildren m inh pure
 
 censorChildren :: Monoid syn' => Fmt inh syn' o e a -> (syn' -> a -> Fmt inh syn o e b) -> Fmt inh syn o e b
 censorChildren (Fmt m) f = Fmt $ Free $ CensorChildren m (\syn' a -> fromFmt $ f syn' a)
@@ -72,7 +72,7 @@ throw e = Fmt $ Free $ Throw e
 --       Eliminating the FormatterEffect indirection should improve performance.
 data FormatterEffect inh syn sib o e a
   = AskParent (inh -> a)
-  | TellChildren inh a
+  | forall b inh'. TellChildren (Free (FormatterEffect inh' syn sib o e) b) inh' (b -> a)
 
   | forall b syn'. Monoid syn' => CensorChildren (Free (FormatterEffect inh syn' sib o e) b) (syn' -> b -> a)
   | TellParent syn a
@@ -85,26 +85,37 @@ data FormatterEffect inh syn sib o e a
 
 deriving instance Functor (FormatterEffect inh syn sib o e)
 
+-- TODO: use standard pipe-like thing (keep CensorWrites in mind though)
 data Progress o e a = Step o (Progress o e a) | Exceptional e | Done a
   deriving (Functor, Show)
 data Result syn sib a = Result { resultSyn :: syn, resultSib :: sib, resultValue :: a }
   deriving (Functor, Show)
+
+instance Applicative (Progress o e) where
+  pure = Done
+  Step o c <*> r = Step o (c <*> r)
+  Exceptional e <*> _ = Exceptional e
+  Done f <*> Step o c = Step o (Done f <*> c)
+  Done _f <*> Exceptional e = Exceptional e
+  Done f <*> Done a = Done (f a)
+instance Monad (Progress o e) where
+  Step o c >>= f = Step o (c >>= f)
+  Exceptional e >>= _ = Exceptional e
+  Done m >>= f = f m
 
 runFormatter :: Monoid syn => Free (FormatterEffect inh syn sib o e) a -> inh -> sib -> Progress o e (Result syn sib a)
 runFormatter (Pure a) _inh sib = Done (Result mempty sib a)
 
  -- top-down
 runFormatter (Free (AskParent f)) inh sib = runFormatter (f inh) inh sib
-runFormatter (Free (TellChildren inh' f)) _inh sib = runFormatter f inh' sib
+runFormatter (Free (TellChildren sub inh' f)) inh sib = do
+  t <- runFormatter sub inh' sib
+  runFormatter (Free (TellParent (resultSyn t) $ f (resultValue t))) inh (resultSib t)
 
  -- bottom-up
-runFormatter (Free (CensorChildren sub f)) inh sib =
-  let
-    subProgress = runFormatter sub inh sib
-    go (Step a p) = Step a (go p)
-    go (Exceptional e) = Exceptional e
-    go (Done t) = runFormatter (f (resultSyn t) (resultValue t)) inh (resultSib t)
-  in go subProgress
+runFormatter (Free (CensorChildren sub f)) inh sib = do
+  t <- runFormatter sub inh sib
+  runFormatter (f (resultSyn t) (resultValue t)) inh (resultSib t)
 runFormatter (Free (TellParent syn a)) inh sib = (\r -> r { resultSyn = syn <> resultSyn r }) <$> runFormatter a inh sib
 
  -- left-to-right (beginning of file to end of file, sort of like preorder but

@@ -19,7 +19,6 @@ import           Data.Semigroup.Generic
 import           Data.Set                       ( Set )
 import qualified Data.Set                      as S
 import           Data.Word                      ( Word8 )
-import           Foreign.C
 import           Foreign.Marshal.Alloc          ( malloc )
 import           Foreign.Marshal.Array          ( peekArray
                                                 , allocaArray
@@ -450,12 +449,13 @@ nodeInner bs n =
 
 printNode :: Int -> BS.ByteString -> Node -> IO ()
 printNode ind source n@Node {..} = do
-  theType <- peekCString nodeType
   let start =
         let TSPoint {..} = nodeStartPoint
         in  "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
       end =
         let TSPoint {..} = nodeEndPoint
         in  "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
-  hPutStrLn stderr $ replicate ind ' ' ++ theType ++ start ++ "-" ++ end
-  hPutStrLn stderr $ replicate ind ' ' ++ show (nodeInner source n)
+      typ :: Grammar
+      typ = toEnum $ fromEnum $ nodeSymbol
+  hPutStrLn stderr $ replicate (ind*2) ' ' ++ show typ ++ start ++ "-" ++ end
+  hPutStrLn stderr $ replicate (ind*2) ' ' ++ show (nodeInner source n)
