@@ -13,6 +13,7 @@ import           Format
 main :: IO ()
 main = join $ execParser opts
 
+opts :: ParserInfo (IO ())
 opts = info (parser <**> helper)
       ( fullDesc
      <> progDesc "Formats Nix code"

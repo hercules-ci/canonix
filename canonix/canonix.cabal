@@ -11,7 +11,7 @@ maintainer:          robert@roberthensing.nl
 -- copyright:
 category:            Language
 extra-source-files:  CHANGELOG.md
-data-files:          tests/golden/*.nix
+                     tests/golden/*.nix
 
 common src-main
   build-depends:       base ^>=4.12.0.0
@@ -45,7 +45,9 @@ test-suite canonix-tests
   import: src-main
   type: exitcode-stdio-1.0
   main-is: Main.hs
-  other-modules: Paths_canonix
+  other-modules:
+    Canonix.Monad
+    Format
   hs-source-dirs: tests, src
   ghc-options: -Wall -threaded
   build-depends:
