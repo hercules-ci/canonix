@@ -12,13 +12,13 @@ import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as BB
 import qualified Data.ByteString.Lazy          as BL
-import           Data.Char (ord)
+import           Data.Char                      ( ord )
+import           Data.Monoid                    ( Ap(Ap) )
 import           Data.Functor.Foldable
 import           Data.Semigroup.Generic
 import           Data.Set                       ( Set )
 import qualified Data.Set                      as S
 import           Data.Word                      ( Word8 )
-import           Foreign.C
 import           Foreign.Marshal.Alloc          ( malloc )
 import           Foreign.Marshal.Array          ( peekArray
                                                 , allocaArray
@@ -32,6 +32,11 @@ import           TreeSitter.Nix
 import           TreeSitter.Node
 import           TreeSitter.Parser
 import           TreeSitter.Tree
+-- import Debug.Trace (trace)
+
+traceDemand :: String -> a -> a
+traceDemand = flip const  -- folds away the debug statements
+-- traceDemand = trace  -- should show an interleaving of Chunk production and Node demand
 
 format :: Bool -> ByteString -> IO BL.ByteString
 format debug source = do
@@ -56,11 +61,29 @@ format debug source = do
     when debug $ dump 0 root
 
     tree <- mkTree root
-    let f = bottomUp (fmap abstract tree) formatter
+    let f = bottomUp (fmap (lg . abstract) tree) formatter
+        lg nd = traceDemand ("Demanding " <> show nd) nd
 
-    let go (Step chunk tl) = do  -- Either
+    let go (Step chunk0 tl) = do  -- Either
+           let chunk = traceDemand ("Chunk completed (" <> show chunk0 <> ")") chunk0
+           -- Demanding chunks strictly should help to keep active memory small.
+           -- They will be gathered up in memory, but that's unavoidable
+           -- because checking for exceptions is strict and we don't want/need
+           -- to write partial files.
+           --
+           -- When this statement is omitted, the pattern match on the final
+           -- Either will cause the whole Fmt to be loaded into memory, which
+           -- is a big data structure with many thunks in it. Makes those few
+           -- output bytes insignificant.
+           chunk `seq` pure ()
            (cs, r) <- go tl
-           pure (BB.byteString chunk <> cs, r)
+           let cs' = BB.byteString chunk <> cs
+
+           -- Either of these seqs should independently do the trick, but
+           --   - the one above makes trace message interleaving nicely granular
+           --   - this one compacts the loose chunks into contiguous memory
+           cs' `seq` pure ()
+           pure (cs', r)
         go (Exceptional e) = Left e
         go (Done r) = pure (pure r)
 
@@ -103,20 +126,55 @@ type ErrorMessage = String
 
 type CnxFmt = Fmt Inherited Synthesized ByteString ErrorMessage
 
-verbatim :: ANode -> CnxFmt ()
-verbatim n = do
-  src <- asksParent source
-  let bs = BS.drop (startByte n) (BS.take (endByte n) src)
-  write bs
-  pure ()
+-- | Runs its argument only if outputting a single line is a possibility.
+whenSingleLineAllowed :: CnxFmt a -> CnxFmt (Maybe a)
+whenSingleLineAllowed fmt = do
+  allowed <- asksParent singleLineAllowed
+  forM (guard allowed) (const fmt)
+
+-- | Declare that the single-line format has failed, ensuring that the
+-- multiline-style output will be written.
+forceMultiline :: CnxFmt ()
+forceMultiline = tellParent mempty { singleLine = Ap Nothing }
+
+-- | Try to use the single line format. This is how the multiline format can
+-- use the single line format.
+trySingleLine :: CnxFmt a -> CnxFmt a
+trySingleLine fmt = do
+  allowed <- asksParent singleLineAllowed
+  if not allowed then fmt
+  else do
+    rw      <- asksParent remainingWidth
+    censorWrites (censorChildren fmt $ \syn a -> do
+      let
+        ln :: Ap Maybe ByteString
+        ln = do
+          l0 <- singleLine syn
+          -- rely on fusion
+          let l1 = BS.reverse . BS.dropWhile (== charCode ' ') . BS.reverse $ l0
+          guard (BS.length l1 <= rw) -- TODO: unicode width
+          pure l1
+
+      (ln, a) <$ tellParent (syn { singleLine = ln })
+      ) $ \multilineChunks (ln, a) -> do
+      case ln of
+        Ap (Just l) -> write l
+        _ -> mapM_ write multilineChunks
+      pure a
+
+-- | Tell the children what they need to know from their parent.
+withSelf :: ANode -> CnxFmt () -> CnxFmt ()
+withSelf self fmt = do
+  inh <- askParent
+  tellChildren inh { singleLineAllowed = not (isMultiline self) } fmt
 
 formatter :: ANode -> [(ANode, CnxFmt ())] -> CnxFmt ()
-formatter self children =
+formatter self children = withSelf self $ trySingleLine $
   case (typ self, map (\(node, comp) -> (typ node, comp)) children) of
             -- Expression is the root node of a file
             (Expression, _) -> do
               mconcat <$> traverse snd children
-              newline
+              forceNewline
 
               -- TODO: This doesn't match comments. Not the end of the world, due
               --       to the verbatim fallback, but adding it in these pattern
@@ -190,7 +248,6 @@ formatter self children =
               a
               space
               eq1
-              space
               withIndent 2 $ do
                 v
                 sc
@@ -214,13 +271,16 @@ formatter self children =
               sc
               newline
 
-            (Attrset, (AnonLBracket, open):rest)
+            (Attrset, (AnonLBrace, open):rest)
               | (bindings, rest') <- span (\(x, _) -> x == Bind || x == Inherit) rest
-              , [(AnonRBracket, close)] <- rest'
+              , [(AnonRBrace, close)] <- rest'
               -> do
               open
-              withIndent 2 $
-                void $ traverse snd bindings
+              withIndent' 2 $ do
+                forM_ bindings $ \(_, i) -> do
+                  newline
+                  i
+              newline -- ??
               close
 
             (Attrs, as) | all (\(x, _) -> x == Identifier) as -> do
@@ -230,6 +290,8 @@ formatter self children =
 
             (AnonRBracket, []) -> verbatim self
             (AnonLBracket, []) -> verbatim self
+            (AnonRBrace, []) -> verbatim self
+            (AnonLBrace, []) -> verbatim self
             (AnonColon, []) -> verbatim self
             (Identifier, []) -> verbatim self
             (AnonEqual, []) -> verbatim self
@@ -239,34 +301,69 @@ formatter self children =
             (AnonQuestion, []) -> verbatim self
             (AnonSemicolon, []) -> verbatim self
             (Spath, []) -> verbatim self
+            (Integer, []) -> verbatim self
             (Comment, []) -> do
-              newline
+              forceMultiline
+              newline -- TODO: clearline
               verbatim self
               newline
             (_x, _y) -> do
               tellParent mempty { fallbackNodes = S.singleton self }
               verbatim self
 
--- TODO: this currently breaks withIndent. The need for an output abstraction
---       is discussed in a comment at Synthesized.
+-- | A newline in multiline format, but a space in single line format
 newline :: CnxFmt ()
 newline = do
   ind <- asksParent indent
   write "\n"
   write (BS.replicate ind (charCode ' '))
+  void $ whenSingleLineAllowed $
+    tellParent mempty { singleLine = pure " " }
 
--- TODO: replace by flexible space that can convert to newline
+-- This is only used by Expression (top-level)
+-- A better way to solve this is add the final newline outside the recursive
+-- format function.
+forceNewline :: CnxFmt ()
+forceNewline = do
+  ind <- asksParent indent
+  write "\n"
+  write (BS.replicate ind (charCode ' '))
+  void $ whenSingleLineAllowed $
+    tellParent mempty { singleLine = pure "\n" }
+
+-- | Copy a node to the output without any changes
+verbatim :: ANode -> CnxFmt ()
+verbatim n = do
+  src <- asksParent source
+  let bs = BS.drop (startByte n) (BS.take (endByte n) src)
+  write bs
+  _ <- whenSingleLineAllowed $ do
+    rw <- asksParent remainingWidth
+    tellParent mempty { singleLine = bs <$ guard (BS.length bs <= rw) }
+  pure ()
+
+-- | Just a space
 space :: CnxFmt ()
-space =
+space = do
   write " "
+  void $ whenSingleLineAllowed $
+    tellParent mempty { singleLine = pure " " }
 
+-- | Adds a newline and starts an indented block.
 withIndent :: Int -> CnxFmt a -> CnxFmt a
 withIndent n m = do
   inh <- askParent
   tellChildren (inh { indent = indent inh + n }) (newline *> m)
 
--- | Indent except at top level
--- Does put output on new line
+-- | Declare increased indentation while appending to the current line
+withIndent' :: Int -> CnxFmt a -> CnxFmt a
+withIndent' n m = do
+  inh <- askParent
+  tellChildren (inh { indent = indent inh + n }) m
+
+-- | Indent except at top level.
+--
+-- Always creates a new line, like 'withIndent'.
 withOptionalIndent :: Int -> CnxFmt a -> CnxFmt a
 withOptionalIndent n m = do
   tl <- asksParent indent
@@ -278,27 +375,32 @@ charCode = fromIntegral . ord
 data Inherited = Inherited
   { indent :: Int
   , source :: ByteString
+  , singleLineAllowed :: Bool
   }
 rootInherited :: ByteString -> Inherited
-rootInherited bs = Inherited { indent = 0, source = bs }
+rootInherited bs = Inherited { indent = 0, source = bs, singleLineAllowed = False }
+
+remainingWidth :: Inherited -> Int
+remainingWidth inh = max 30 (78 - indent inh)
 
 data Synthesized = Synthesized
   { unknownTypes :: Set String
   , fallbackNodes :: Set ANode
-
-    -- TODO:
-    --
-    -- A synthesized attribute
-    --     singleline :: Maybe ByteString
-    -- which represents a formatted single-line variation of the subtree, or
+  , singleLine :: Ap Maybe ByteString
+    -- ^
+    -- singleLine represents a formatted single-line variation of the subtree, or
     -- Nothing when the line is too long, or if the original tree is multiline.
     --
     -- When a node isn't already known to be multiline because of multiline
     -- input, this attribute is required for determining whether it should be,
     -- based on the size of the subexpressions. That is - by checking its
-    -- own single-line output before streaming out the multiline output. This
-    -- can be achieved with CensorChildren.
-    --
+    -- own single-line output before streaming out the multiline output.
+  }
+  deriving (Generic, Show)
+instance Semigroup Synthesized where (<>) = gmappend
+instance Monoid Synthesized where { mappend = gmappend; mempty = gmempty }
+
+    -- TODO: Turn these considerations into design document
     --------------------------------------------------------------------------
     --
     -- Previous notes (for context, possibly outdated):
@@ -322,9 +424,9 @@ data Synthesized = Synthesized
     --
     --  {                          {
     --    a = lineTooLong;           a =
-    --    b = false;                   oneOrMoreLines;
+    --    b = short;                   oneOrMoreLines;
     --  }                            b =
-    --    potential extra   ------>    false;
+    --    potential extra   ------>    short;
     --       conflict              }
     --
     -- The right hand side looks nicer, but does introduce an extra conflict
@@ -360,10 +462,6 @@ data Synthesized = Synthesized
     -- count UTF8 code points to make it nice. (I know code points aren't
     -- glyphs, but you have to draw a line - what's the width of a 'glyph'
     -- anyway?)
-  }
-  deriving Generic
-instance Semigroup Synthesized where (<>) = gmappend
-instance Monoid Synthesized where { mappend = gmappend; mempty = gmempty }
 
 -- Cofree [] Node: rose tree (n-ary tree) with Node as the label for each node
 mkTree :: Node -> IO (Cofree [] Node)
@@ -385,12 +483,13 @@ nodeInner bs n =
 
 printNode :: Int -> BS.ByteString -> Node -> IO ()
 printNode ind source n@Node {..} = do
-  theType <- peekCString nodeType
   let start =
         let TSPoint {..} = nodeStartPoint
         in  "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
       end =
         let TSPoint {..} = nodeEndPoint
         in  "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
-  hPutStrLn stderr $ replicate ind ' ' ++ theType ++ start ++ "-" ++ end
-  hPutStrLn stderr $ replicate ind ' ' ++ show (nodeInner source n)
+      typ :: Grammar
+      typ = toEnum $ fromEnum $ nodeSymbol
+  hPutStrLn stderr $ replicate (ind*2) ' ' ++ show typ ++ start ++ "-" ++ end
+  hPutStrLn stderr $ replicate (ind*2) ' ' ++ show (nodeInner source n)
