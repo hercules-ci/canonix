@@ -1,4 +1,6 @@
 { pkgs ? import ./nix {} }:
 {
-  inherit (pkgs.canonixHaskellPackages) canonix;
+  canonix =
+    pkgs.haskell.lib.justStaticExecutables pkgs.canonixHaskellPackages.canonix;
+  
 }
