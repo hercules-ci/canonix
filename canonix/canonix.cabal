@@ -45,7 +45,9 @@ test-suite canonix-tests
   import: src-main
   type: exitcode-stdio-1.0
   main-is: Main.hs
-  other-modules: Paths_canonix
+  other-modules:
+    Canonix.Monad
+    Format
   hs-source-dirs: tests, src
   ghc-options: -Wall -threaded
   build-depends:
