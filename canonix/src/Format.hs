@@ -168,9 +168,19 @@ withSelf self fmt = do
   inh <- askParent
   tellChildren inh { singleLineAllowed = not (isMultiline self) } fmt
 
+foldComments :: CnxFmt () -> [(Grammar, CnxFmt ())] -> [(Grammar, CnxFmt ())]
+foldComments p ((Comment, fmt0):more) = foldComments (p >> fmt0) more
+foldComments p ((t, fmt0):more) = (t, p >> fmt0) : foldComments (pure ()) more
+foldComments _p [] = []
+
 formatter :: ANode -> [(ANode, CnxFmt ())] -> CnxFmt ()
 formatter self children = withSelf self $ trySingleLine $
-  case (typ self, map (\(node, comp) -> (typ node, comp)) children) of
+  let
+    childrenByType = map (\(n,fmt) -> (typ n, fmt)) children
+
+    matchableChildren = foldComments (pure ()) childrenByType
+
+  in case (typ self, matchableChildren) of
             -- Expression is the root node of a file
             (Expression, _) -> do
               mconcat <$> traverse snd children
