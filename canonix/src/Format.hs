@@ -16,6 +16,7 @@ import qualified Data.ByteString.Builder       as BB
 import qualified Data.ByteString.Lazy          as BL
 import           Data.Char                      ( ord )
 import           Data.Monoid                    ( Ap(Ap) )
+import           Data.Foldable
 import           Data.Functor.Foldable
 import           Data.Semigroup.Generic
 import           Data.Set                       ( Set )
@@ -215,10 +216,9 @@ formatter self children = withSelf self $ trySingleLine $
               One Formals formals (One AnonColon colon (One _ body []))) -> do
               formals
               colon
-              withOptionalIndent 2 $ do
-                body
+              withOptionalIndent 2 body
 
-            (Function, 
+            (Function,
               One Identifier i (One AnonColon colon (One Function body []))) -> do
               i
               colon
@@ -228,14 +228,13 @@ formatter self children = withSelf self $ trySingleLine $
             (Function, One Identifier i (One AnonColon colon (One _ body []))) -> do
               i
               colon
-              withOptionalIndent 2 $ do
-                body
+              withOptionalIndent 2 body
 
             (Formals, One AnonLBracket open rest) -> do
               open
-              void $ traverse snd rest
+              traverse_ snd rest
 
-            (Formal, One Identifier i []) -> do
+            (Formal, One Identifier i []) ->
               i
 
             (Formal, One Identifier i (One AnonQuestion q (One _ e []))) -> do
@@ -260,7 +259,7 @@ formatter self children = withSelf self $ trySingleLine $
               ) -> do
               l
               withIndent 2 $
-                void $ traverse snd bindings
+                traverse_ snd bindings
               newline
               inkw
               if bodyTyp == Attrset
@@ -268,8 +267,7 @@ formatter self children = withSelf self $ trySingleLine $
                 space
                 body
               else
-                withIndent 2 $
-                  body
+                withIndent 2 body
 
             (Bind, One Attrpath a (One AnonEqual eq1 (One _ v (One AnonSemicolon sc [])))) -> do
               a
@@ -315,8 +313,8 @@ formatter self children = withSelf self $ trySingleLine $
               newline -- ??
               close
 
-            (Attrs, as) | all (\(x, _) -> typ x == Identifier) as -> do
-              void $ forM as $ \(_, i) -> do
+            (Attrs, as) | all (\(x, _) -> typ x == Identifier) as ->
+              forM_ as $ \(_, i) -> do
                 space
                 i
 
