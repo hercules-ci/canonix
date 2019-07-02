@@ -2,6 +2,8 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE PatternSynonyms #-}
 module Format where
 
 import           Canonix.Monad
@@ -26,7 +28,7 @@ import           Foreign.Marshal.Array          ( peekArray
 import           Foreign.Marshal.Utils          ( with )
 import           Foreign.Ptr                    ( nullPtr )
 import           Foreign.Storable               ( peek )
-import           GHC.Generics
+import           GHC.Generics                   ( Generic )
 import           System.IO
 import           TreeSitter.Nix
 import           TreeSitter.Node
@@ -168,54 +170,75 @@ withSelf self fmt = do
   inh <- askParent
   tellChildren inh { singleLineAllowed = not (isMultiline self) } fmt
 
+matchOneOfTypeWithComments :: Applicative m => [(ANode, m a)] -> Maybe (Grammar, m a, [(ANode, m a)])
+matchOneOfTypeWithComments = go id
+  where
+    go acc ((n, a) : as) | typ n == Comment = go ((a *>) . acc) as
+    go acc ((t, a) : as) = Just (typ t, (acc a), as)
+    go _ [] = Nothing
+
+matchOneWithComments :: Applicative m => (ANode -> Bool) -> [(ANode, m a)] -> Maybe (Grammar, m a, [(ANode, m a)])
+matchOneWithComments p = go id
+  where
+    go acc ((n, a) : as) | p n = Just (typ n, (acc a), as)
+    go acc ((n, a) : as) | typ n == Comment = go (acc . (a *>)) as
+    go _ _ = Nothing
+
+matchManyOfTypeWithComments :: Applicative m => (ANode -> Bool) -> [(ANode, m a)] -> ([(Grammar, m a)], [(ANode, m a)])
+matchManyOfTypeWithComments p = go id
+  where
+    go acc l = case matchOneWithComments p l of
+                      Just (g, m, rest) -> go (acc . ((g, m):)) rest
+                      Nothing -> (acc [], l)
+
+pattern One :: Applicative m => Grammar -> m a -> [(ANode, m a)] -> [(ANode, m a)]
+pattern One t m rest <- (matchOneOfTypeWithComments -> Just (t, m, rest))
+
+spanTypes :: Applicative m => [Grammar] -> [(ANode, m a)] -> ([(Grammar, m a)], [(ANode, m a)])
+spanTypes ts = matchManyOfTypeWithComments (\x -> typ x `elem` ts)
+
+pattern Comments :: Applicative m => [(Grammar, m a)] -> [(ANode, m a)] -> [(ANode, m a)]
+pattern Comments cs rest <- (spanTypes [Comment] -> (cs, rest))
+
+pattern (:*:) :: a -> b -> (a, b)
+pattern a :*: b = (a, b)
+
 formatter :: ANode -> [(ANode, CnxFmt ())] -> CnxFmt ()
 formatter self children = withSelf self $ trySingleLine $
-  case (typ self, map (\(node, comp) -> (typ node, comp)) children) of
+  case (typ self, children) of
             -- Expression is the root node of a file
             (Expression, _) -> do
               mconcat <$> traverse snd children
               forceNewline
 
-              -- TODO: This doesn't match comments. Not the end of the world, due
-              --       to the verbatim fallback, but adding it in these pattern
-              --       matches causes a combinatorial explosion.
-              --
-              --       What we may do instead is either
-              --          - Ignore them here and make the write-side of CnxFmt
-              --            responsible for adding them back in.
-              --          - Not use the built-in pattern matching but some
-              --            sort of parser-like thing that remembers comments.
-              --            Doing say *may* also make the match a bit more flexible,
-              --            allowing more introspection without getting super verbose.
-              --            *HOWEVER* we don't want to do any kind of deep matching
-              --            because that means we enter O(n^2) territory.
-              --            The Synthesized type provides memoization!
-            (Function, [(Formals, formals), (AnonColon, colon), (_, body)]) -> do
+            (Function,
+              One Formals formals (One AnonColon colon (One _ body []))) -> do
               formals
               colon
               withOptionalIndent 2 $ do
                 body
 
-            (Function, [(Identifier, i), (AnonColon, colon), (Function, body)]) -> do
+            (Function, 
+              One Identifier i (One AnonColon colon (One Function body []))) -> do
               i
               colon
               space
               body
 
-            (Function, [(Identifier, i), (AnonColon, colon), (_, body)]) -> do
+            (Function, One Identifier i (One AnonColon colon (One _ body []))) -> do
               i
               colon
               withOptionalIndent 2 $ do
                 body
 
-            (Formals, (AnonLBracket, open):ch) -> do
+            (Formals, One AnonLBracket open rest) -> do
               open
-              void $ traverse snd ch
+              void $ traverse snd rest
 
-            (Formal, [(Identifier, i)]) -> do
+            (Formal, One Identifier i []) -> do
               i
 
-            (Formal, [(Identifier, i), (AnonQuestion, q), (_, e)]) -> do
+            (Formal, One Identifier i (One AnonQuestion q (One _ e []))) -> do
               i
               space
               q
@@ -227,10 +250,14 @@ formatter self children = withSelf self $ trySingleLine $
               space
               b
 
-            (Let, (Let, l):rest)
-              | (bindings, rest') <- span (\(x, _) -> x == Bind || x == Inherit) rest
-              , [(AnonIn, inkw), (bodyTyp, body) ] <- rest'
-              -> do
+            (Let,
+              One Let l
+                (spanTypes [Bind, Inherit] -> bindings :*:
+                  (One AnonIn inkw
+                    (One bodyTyp body [])
+                  )
+                )
+              ) -> do
               l
               withIndent 2 $
                 void $ traverse snd bindings
@@ -244,7 +271,7 @@ formatter self children = withSelf self $ trySingleLine $
                 withIndent 2 $
                   body
 
-            (Bind, [(Attrpath, a), (AnonEqual, eq1), (_, v), (AnonSemicolon, sc)]) -> do
+            (Bind, One Attrpath a (One AnonEqual eq1 (One _ v (One AnonSemicolon sc [])))) -> do
               a
               space
               eq1
@@ -253,7 +280,7 @@ formatter self children = withSelf self $ trySingleLine $
                 sc
               newline
 
-            (Inherit, [(Inherit, inhKw), (Parenthesized, p), (Attrs, attrs), (AnonSemicolon, sc)]) -> do
+            (Inherit, (One Inherit inhKw (One Parenthesized p (One Attrs attrs (One AnonSemicolon sc []))))) -> do
               inhKw
               space
               p
@@ -263,7 +290,7 @@ formatter self children = withSelf self $ trySingleLine $
               sc
               newline
 
-            (Inherit, [(Inherit, inhKw), (Attrs, attrs), (AnonSemicolon, sc)]) -> do -- FIXME specific attrs
+            (Inherit, (One Inherit inhKw (One Attrs attrs (One AnonSemicolon sc [])))) -> do -- FIXME specific attrs
               inhKw
               withIndent 2 $ do
                 space
@@ -271,19 +298,24 @@ formatter self children = withSelf self $ trySingleLine $
               sc
               newline
 
-            (Attrset, (AnonLBrace, open):rest)
-              | (bindings, rest') <- span (\(x, _) -> x == Bind || x == Inherit) rest
-              , [(AnonRBrace, close)] <- rest'
-              -> do
+            (Attrset,
+              One AnonLBrace open
+                (spanTypes [Bind, Inherit] -> bindings :*:
+                  Comments finalComments (
+                    One AnonRBrace close []
+                  )
+                )
+              ) -> do
               open
               withIndent' 2 $ do
                 forM_ bindings $ \(_, i) -> do
                   newline
                   i
+                mapM_ snd finalComments
               newline -- ??
               close
 
-            (Attrs, as) | all (\(x, _) -> x == Identifier) as -> do
+            (Attrs, as) | all (\(x, _) -> typ x == Identifier) as -> do
               void $ forM as $ \(_, i) -> do
                 space
                 i
