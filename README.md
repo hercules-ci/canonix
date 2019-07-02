@@ -4,4 +4,4 @@ Nix formatter prototype written in Haskell using [tree-sitter-nix](https://githu
 
 ## sponsors 
 
-Intial prototype was sponsored by [NumTide Ltd](https://numtide.com/)
+Initial prototype was sponsored by [NumTide Ltd](https://numtide.com/)
