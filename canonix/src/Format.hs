@@ -4,12 +4,16 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE LambdaCase #-}
 module Format where
 
 import           Canonix.Monad
+import qualified Control.Exception
 import           Control.Comonad.Cofree
 import qualified Control.Comonad.Trans.Cofree as T
 import           Control.Monad
+import           Control.Monad.Identity
+import           Control.Monad.State
 import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as BB
@@ -35,6 +39,8 @@ import           TreeSitter.Nix
 import           TreeSitter.Node
 import           TreeSitter.Parser
 import           TreeSitter.Tree
+import Pipes
+import qualified Pipes.Lift
 -- import Debug.Trace (trace)
 
 traceDemand :: String -> a -> a
@@ -64,44 +70,49 @@ format debug source = do
     when debug $ dump 0 root
 
     tree <- mkTree root
-    let f = bottomUp (fmap (lg . abstract) tree) formatter
-        lg nd = traceDemand ("Demanding " <> show nd) nd
+    let 
+      (_ast, cnxfmt) = bottomUp (fmap (lg . abstract) tree) formatter
+      lg nd = traceDemand ("Demanding " <> show nd) nd
 
-    let go (Step chunk0 tl) = do  -- Either
-           let chunk = traceDemand ("Chunk completed (" <> show chunk0 <> ")") chunk0
-           -- Demanding chunks strictly should help to keep active memory small.
-           -- They will be gathered up in memory, but that's unavoidable
-           -- because checking for exceptions is strict and we don't want/need
-           -- to write partial files.
-           --
-           -- When this statement is omitted, the pattern match on the final
-           -- Either will cause the whole Fmt to be loaded into memory, which
-           -- is a big data structure with many thunks in it. Makes those few
-           -- output bytes insignificant.
-           chunk `seq` pure ()
-           (cs, r) <- go tl
-           let cs' = BB.byteString chunk <> cs
+      produce = do
+        r <- Pipes.hoist (pure . runIdentity) (runFmt cnxfmt (rootInherited source)) >-> forever (await >>= (yield . Left))
+        yield (Right r)
+        liftIO $ Control.Exception.throwIO $ Control.Exception.AssertionFailed "Can't consume past end"
 
-           -- Either of these seqs should independently do the trick, but
-           --   - the one above makes trace message interleaving nicely granular
-           --   - this one compacts the loose chunks into contiguous memory
-           cs' `seq` pure ()
-           pure (cs', r)
-        go (Exceptional e) = Left e
-        go (Done r) = pure (pure r)
+      consume = do 
+        (r, x) <- Pipes.Lift.runStateP (mempty :: BB.Builder) $
+          fix $ \nxt ->
+            await >>= \case
+              Left chunk0 -> do
 
-    (blob, r) <- case go (runFmt (snd f) $ rootInherited source) of
-      Left e -> error e  -- TODO use proper IO exception instead of pure exception
-      Right x -> pure x
+                let chunk = traceDemand ("Chunk completed (" <> show chunk0 <> ")") chunk0
+                -- Demanding chunks strictly should help to keep active memory small.
+                -- They will be gathered up in memory, but that's unavoidable
+                -- because checking for exceptions is strict and we don't want/need
+                -- to write partial files.
+                --
+                -- When this statement is omitted, the pattern match on the final
+                -- Either will cause the whole Fmt to be loaded into memory, which
+                -- is a big data structure with many thunks in it. Makes those few
+                -- output bytes insignificant.
+                chunk `seq` pure ()
+                modify' (<> BB.byteString chunk)
+                nxt
+              Right end ->
+                pure end
 
-    let synthesized = resultSyn r
+        (synthesized, _) <- case r of
+          Left e -> liftIO $ Control.Exception.throwIO $ Control.Exception.ErrorCall e
+          Right r -> pure r
 
-    -- NB: debug forces the tree before the lazy bytestring does it
-    when debug $ do
-      hPutStrLn stderr $ "Encountered these unknown node types: " <> show (unknownTypes synthesized)
-      hPutStrLn stderr $ "Verbatim fallback nodes: " <> show (fallbackNodes synthesized)
+        when debug $ lift $ do
+          hPutStrLn stderr $ "Encountered these unknown node types: " <> show (unknownTypes synthesized)
+          hPutStrLn stderr $ "Verbatim fallback nodes: " <> show (fallbackNodes synthesized)
 
-    pure $ BB.toLazyByteString blob
+        pure $ BB.toLazyByteString x
+
+
+    Pipes.runEffect (produce >-> consume)
 
 bottomUp :: Cofree [] ANode -> (ANode -> [(ANode, a)] -> a) -> (ANode, a)
 bottomUp t f = cataA (\(self T.:< c) -> (self, f self c)) t

@@ -19,8 +19,11 @@ common src-main
                      , comonad
                      , containers
                      , free
+                     , mtl
+                     , pipes
                      , recursion-schemes
                      , semigroups
+                     , transformers
                      , tree-sitter
                      , tree-sitter-nix
   hs-source-dirs:      src

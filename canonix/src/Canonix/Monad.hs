@@ -1,9 +1,5 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE ExistentialQuantification #-}
-{-# LANGUAGE StandaloneDeriving #-}
-
+{-# LANGUAGE GeneralisedNewtypeDeriving #-}
 module Canonix.Monad
   (
     -- * Fmt monad
@@ -11,8 +7,6 @@ module Canonix.Monad
     -- A monad for tree data flows, streaming output and exceptions.
     Fmt
   , runFmt
-  , Progress(..)
-  , Result(..)
 
     -- * Top-down data flow
     --
@@ -34,121 +28,66 @@ module Canonix.Monad
   )
 where
 
-import           Control.Monad.Free
+import           Control.Monad.Reader
+import           Control.Monad.State.Strict
+import           Control.Monad.Except
+import           Control.Monad.Identity
+import           Pipes
+import qualified Pipes.Prelude                 as PPl
+import qualified Pipes.Lift                    as PL
 
-newtype Fmt inh syn o e a = Fmt { fromFmt :: Free (FormatterEffect inh syn () o e) a }
-  deriving (Functor, Applicative, Monad)
+newtype Fmt inh syn o e a = Fmt
+  { fromFmt :: Producer o (ReaderT inh (StateT syn (ExceptT e Identity))) a
+  } deriving (Functor, Applicative, Monad)
 
 runFmt
-  :: Monoid syn => Fmt inh syn o e a -> inh -> Progress o e (Result syn () a)
-runFmt (Fmt m) inh = runFormatter m inh ()
+  :: Monoid syn
+  => Fmt inh syn o e a
+  -> inh
+  -> Producer o Identity (Either e (syn, a))
+runFmt (Fmt m) inh =
+  fmap (fmap swap) $ PL.runExceptP $ PL.runStateP mempty $ PL.runReaderP inh m
+ where
+  swap :: (a, b) -> (b, a)
+  swap (a, b) = (b, a)
 
 askParent :: Fmt inh syn o e inh
-askParent = Fmt $ Free (AskParent pure)
+askParent = Fmt $ ask
 
 asksParent :: (inh -> a) -> Fmt inh syn o e a
-asksParent f = Fmt $ Free $ AskParent $ pure . f
+asksParent f = Fmt $ asks f
 
 tellChildren :: inh -> Fmt inh syn o e a -> Fmt inh syn o e a
-tellChildren inh (Fmt m) = Fmt $ Free $ TellChildren m inh pure
+tellChildren inh (Fmt m) = Fmt $ local (const inh) m
 
 censorChildren
   :: Monoid syn'
   => Fmt inh syn' o e a
   -> (syn' -> a -> Fmt inh syn o e b)
   -> Fmt inh syn o e b
-censorChildren (Fmt m) f =
-  Fmt $ Free $ CensorChildren m (\syn' a -> fromFmt $ f syn' a)
+censorChildren (Fmt m) f = Fmt $ do
+  runR      <- asks (flip runReaderT)
+  (a, syn') <-
+    hoist (lift . lift)
+    $ flip runStateT mempty
+    $ PL.distribute
+    $ runR
+    $ PL.distribute m
+  fromFmt $ f syn' a
 
-tellParent :: syn -> Fmt inh syn o e ()
-tellParent syn = Fmt $ Free $ TellParent syn (pure ())
+tellParent :: Semigroup syn => syn -> Fmt inh syn o e ()
+tellParent syn = Fmt $ modify (<> syn)
 
 write :: o -> Fmt inh syn o e ()
-write o = Fmt $ Free $ Write o (pure ())
+write o = Fmt $ yield o
 
 censorWrites
   :: Fmt inh syn o' e a -> ([o'] -> a -> Fmt inh syn o e b) -> Fmt inh syn o e b
-censorWrites (Fmt m) f =
-  Fmt $ Free $ CensorWrites m (\o's a -> fromFmt $ f o's a)
+censorWrites (Fmt m) f = Fmt $ do
+  (l, a) <- lift $ PPl.toListM' m
+  fromFmt $ f l a
+
+  -- Free $ CensorWrites m (\o's a -> fromFmt $ f o's a)
 
 throw :: e -> Fmt inh syn o e a
-throw e = Fmt $ Free $ Throw e
-
--- TODO: when needs of formatter are known to be met, fuse with runFormatter,
---       which means writing it as a newtype that resembles the runFormatter
---       type, or use an equivalent monad transformer stack.
---       Eliminating the FormatterEffect indirection should improve performance.
-data FormatterEffect inh syn sib o e a
-  = AskParent (inh -> a)
-  | forall b inh'. TellChildren (Free (FormatterEffect inh' syn sib o e) b) inh' (b -> a)
-
-  | forall b syn'. Monoid syn' => CensorChildren (Free (FormatterEffect inh syn' sib o e) b) (syn' -> b -> a)
-  | TellParent syn a
-
-  | Modify (sib -> (sib, a))
-
-  | Write o a
-  | forall b o'. CensorWrites (Free (FormatterEffect inh syn sib o' e) b) ([o'] -> b -> a)
-  | Throw e
-
-deriving instance Functor (FormatterEffect inh syn sib o e)
-
--- TODO: use standard pipe-like thing (keep CensorWrites in mind though)
-data Progress o e a = Step o (Progress o e a) | Exceptional e | Done a
-  deriving (Functor, Show)
-data Result syn sib a = Result { resultSyn :: syn, resultSib :: sib, resultValue :: a }
-  deriving (Functor, Show)
-
-instance Applicative (Progress o e) where
-  pure = Done
-  Step o c       <*> r             = Step o (c <*> r)
-  Exceptional e  <*> _             = Exceptional e
-  Done        f  <*> Step o c      = Step o (Done f <*> c)
-  Done        _f <*> Exceptional e = Exceptional e
-  Done        f  <*> Done        a = Done (f a)
-instance Monad (Progress o e) where
-  Step o c      >>= f = Step o (c >>= f)
-  Exceptional e >>= _ = Exceptional e
-  Done        m >>= f = f m
-
-runFormatter
-  :: Monoid syn
-  => Free (FormatterEffect inh syn sib o e) a
-  -> inh
-  -> sib
-  -> Progress o e (Result syn sib a)
-runFormatter (Pure a) _inh sib = Done (Result mempty sib a)
-
- -- top-down
-runFormatter (Free (AskParent f)) inh sib = runFormatter (f inh) inh sib
-runFormatter (Free (TellChildren sub inh' f)) inh sib = do
-  t <- runFormatter sub inh' sib
-  runFormatter (Free (TellParent (resultSyn t) $ f (resultValue t)))
-               inh
-               (resultSib t)
-
- -- bottom-up
-runFormatter (Free (CensorChildren sub f)) inh sib = do
-  t <- runFormatter sub inh sib
-  runFormatter (f (resultSyn t) (resultValue t)) inh (resultSib t)
-runFormatter (Free (TellParent syn a)) inh sib =
-  (\r -> r { resultSyn = syn <> resultSyn r }) <$> runFormatter a inh sib
-
- -- left-to-right (beginning of file to end of file, sort of like preorder but
- --                allowing to 'revisit' the parent before moving on)
- --               (chaining in attribute grammars)
-runFormatter (Free Modify{}) _ _ = error "not implemented"
-
- -- streaming output
-runFormatter (Free (Write o a)) inh sib =
-  let x = runFormatter a inh sib in Step o x
-runFormatter (Free (CensorWrites sub f)) inh sib =
-  let subProgress = runFormatter sub inh sib
-      go acc (Step a p     ) = go (acc . (a :)) p
-      go _ac (Exceptional e) = Exceptional e
-      go acc (Done        t) = runFormatter
-        (Free (TellParent (resultSyn t) $ f (acc []) (resultValue t)))
-        inh
-        (resultSib t)
-  in  go id subProgress
-runFormatter (Free (Throw e)) _inh _sib = Exceptional e
+throw e = Fmt $ throwError e
