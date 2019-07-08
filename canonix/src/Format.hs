@@ -1,23 +1,29 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE LambdaCase #-}
 module Format where
 
 import           Canonix.Monad
+import qualified Control.Exception
 import           Control.Comonad.Cofree
 import qualified Control.Comonad.Trans.Cofree as T
 import           Control.Monad
+import           Control.Monad.Identity
+import           Control.Monad.State
 import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as BB
 import qualified Data.ByteString.Lazy          as BL
 import           Data.Char                      ( ord )
-import           Data.Monoid                    ( Ap(Ap) )
+import           Data.Monoid                    ( Ap(Ap), Last )
 import           Data.Foldable
 import           Data.Functor.Foldable
+import           Data.Semigroup                 ( Max(Max) )
 import           Data.Semigroup.Generic
 import           Data.Set                       ( Set )
 import qualified Data.Set                      as S
@@ -35,6 +41,8 @@ import           TreeSitter.Nix
 import           TreeSitter.Node
 import           TreeSitter.Parser
 import           TreeSitter.Tree
+import Pipes
+import qualified Pipes.Lift
 -- import Debug.Trace (trace)
 
 traceDemand :: String -> a -> a
@@ -64,44 +72,72 @@ format debug source = do
     when debug $ dump 0 root
 
     tree <- mkTree root
-    let f = bottomUp (fmap (lg . abstract) tree) formatter
-        lg nd = traceDemand ("Demanding " <> show nd) nd
+    let 
+      (_ast, cnxfmt) = bottomUp (fmap (lg . abstract) tree) formatter
+      lg nd = traceDemand ("Demanding " <> show nd) nd
 
-    let go (Step chunk0 tl) = do  -- Either
-           let chunk = traceDemand ("Chunk completed (" <> show chunk0 <> ")") chunk0
-           -- Demanding chunks strictly should help to keep active memory small.
-           -- They will be gathered up in memory, but that's unavoidable
-           -- because checking for exceptions is strict and we don't want/need
-           -- to write partial files.
-           --
-           -- When this statement is omitted, the pattern match on the final
-           -- Either will cause the whole Fmt to be loaded into memory, which
-           -- is a big data structure with many thunks in it. Makes those few
-           -- output bytes insignificant.
-           chunk `seq` pure ()
-           (cs, r) <- go tl
-           let cs' = BB.byteString chunk <> cs
+      produce = do
+        r <- Pipes.hoist (pure . runIdentity) (runFmt (cnxfmt >> write (SpaceRequest (pure 0, Linebreak 0)) >> write (NonSpace "")) (rootInherited source)) >-> renderSpaces >-> forever (await >>= (yield . Left))
+        yield (Right r)
+        liftIO $ Control.Exception.throwIO $ Control.Exception.AssertionFailed "Can't consume past end"
 
-           -- Either of these seqs should independently do the trick, but
-           --   - the one above makes trace message interleaving nicely granular
-           --   - this one compacts the loose chunks into contiguous memory
-           cs' `seq` pure ()
-           pure (cs', r)
-        go (Exceptional e) = Left e
-        go (Done r) = pure (pure r)
+      consume = do 
+        (r, x) <- Pipes.Lift.runStateP (mempty :: BB.Builder) $
+          fix $ \nxt ->
+            await >>= \case
+              Left chunk0 -> do
 
-    (blob, r) <- case go (runFmt (snd f) $ rootInherited source) of
-      Left e -> error e  -- TODO use proper IO exception instead of pure exception
-      Right x -> pure x
+                let chunk = traceDemand ("Chunk completed (" <> show chunk0 <> ")") chunk0
+                -- Demanding chunks strictly should help to keep active memory small.
+                -- They will be gathered up in memory, but that's unavoidable
+                -- because checking for exceptions is strict and we don't want/need
+                -- to write partial files.
+                --
+                -- When this statement is omitted, the pattern match on the final
+                -- Either will cause the whole Fmt to be loaded into memory, which
+                -- is a big data structure with many thunks in it. Makes those few
+                -- output bytes insignificant.
+                chunk `seq` pure ()
+                modify' (<> BB.byteString chunk)
+                nxt
+              Right end ->
+                pure end
 
-    let synthesized = resultSyn r
+        (synthesized, _) <- case r of
+          Left e -> liftIO $ Control.Exception.throwIO $ Control.Exception.ErrorCall e
+          Right r' -> pure r'
 
-    -- NB: debug forces the tree before the lazy bytestring does it
-    when debug $ do
-      hPutStrLn stderr $ "Encountered these unknown node types: " <> show (unknownTypes synthesized)
-      hPutStrLn stderr $ "Verbatim fallback nodes: " <> show (fallbackNodes synthesized)
+        when debug $ lift $ do
+          hPutStrLn stderr $ "Encountered these unknown node types: " <> show (unknownTypes synthesized)
+          hPutStrLn stderr $ "Verbatim fallback nodes: " <> show (fallbackNodes synthesized)
 
-    pure $ BB.toLazyByteString blob
+        pure $ BB.toLazyByteString x
+
+
+    Pipes.runEffect (produce >-> consume)
+
+renderSpaces :: Monad m => Pipe (Piece (Indented LogicalSpace)) ByteString m a
+renderSpaces = f Nothing
+ where
+   f ws = await >>= \case
+        NonSpace bs -> do
+          writeSpace ws
+          yield bs
+          f Nothing
+        SpaceRequest ws2 -> f (ws <> Just ws2)
+
+   writeSpace = mapM_ $ \case
+                  (_, Space) -> yield " "
+                  (ind, Linebreak (Max n)) -> yield (BS.replicate (n + 1) (charCode '\n')) >> writeInd ind
+   writeInd ind = forM_ ind $ \i -> yield (BS.replicate i (charCode ' '))
+
+piecesLength :: [Piece ()] -> Int
+piecesLength = f mempty
+ where
+   f ws (NonSpace bs : pcs') = 
+      length ws + BS.length bs + f mempty pcs'
+   f ws (SpaceRequest ws2 : pcs') = f (ws <> Just ws2) pcs'
+   f _ [] = 0
 
 bottomUp :: Cofree [] ANode -> (ANode -> [(ANode, a)] -> a) -> (ANode, a)
 bottomUp t f = cataA (\(self T.:< c) -> (self, f self c)) t
@@ -127,7 +163,22 @@ abstract n =
 
 type ErrorMessage = String
 
-type CnxFmt = Fmt Inherited Synthesized ByteString ErrorMessage
+data Piece ws
+  = NonSpace !ByteString
+  | SpaceRequest !ws
+  deriving (Show, Functor)
+
+type Indented a = (Last Int, a)
+
+data LogicalSpace = Space | Linebreak (Max Int)
+  deriving Show
+
+instance Semigroup LogicalSpace where
+  Space <> x = x
+  x <> Space = x
+  Linebreak x <> Linebreak y = Linebreak (x <> y)
+
+type CnxFmt = Fmt Inherited Synthesized (Piece (Indented LogicalSpace)) ErrorMessage
 
 -- | Runs its argument only if outputting a single line is a possibility.
 whenSingleLineAllowed :: CnxFmt a -> CnxFmt (Maybe a)
@@ -150,18 +201,16 @@ trySingleLine fmt = do
     rw      <- asksParent remainingWidth
     censorWrites (censorChildren fmt $ \syn a -> do
       let
-        ln :: Ap Maybe ByteString
+        ln :: Ap Maybe [Piece ()]
         ln = do
           l0 <- singleLine syn
-          -- rely on fusion
-          let l1 = BS.reverse . BS.dropWhile (== charCode ' ') . BS.reverse $ l0
-          guard (BS.length l1 <= rw) -- TODO: unicode width
-          pure l1
+          l0 <$ guard (piecesLength l0 <= rw) -- TODO: unicode width
 
       (ln, a) <$ tellParent (syn { singleLine = ln })
       ) $ \multilineChunks (ln, a) -> do
       case ln of
-        Ap (Just l) -> write l
+        Ap (Just l) ->
+          mapM_ (write . (pure Space <$)) l
         _ -> mapM_ write multilineChunks
       pure a
 
@@ -210,7 +259,7 @@ formatter self children = withSelf self $ trySingleLine $
             -- Expression is the root node of a file
             (Expression, _) -> do
               mconcat <$> traverse snd children
-              forceNewline
+              newline
 
             (Function,
               One Formals formals (One AnonColon colon (One _ body []))) -> do
@@ -345,39 +394,27 @@ formatter self children = withSelf self $ trySingleLine $
 newline :: CnxFmt ()
 newline = do
   ind <- asksParent indent
-  write "\n"
-  write (BS.replicate ind (charCode ' '))
+  write $ SpaceRequest (pure ind, Linebreak 0)
   void $ whenSingleLineAllowed $
-    tellParent mempty { singleLine = pure " " }
-
--- This is only used by Expression (top-level)
--- A better way to solve this is add the final newline outside the recursive
--- format function.
-forceNewline :: CnxFmt ()
-forceNewline = do
-  ind <- asksParent indent
-  write "\n"
-  write (BS.replicate ind (charCode ' '))
-  void $ whenSingleLineAllowed $
-    tellParent mempty { singleLine = pure "\n" }
+    tellParent mempty { singleLine = pure [SpaceRequest ()] }
 
 -- | Copy a node to the output without any changes
 verbatim :: ANode -> CnxFmt ()
 verbatim n = do
   src <- asksParent source
   let bs = BS.drop (startByte n) (BS.take (endByte n) src)
-  write bs
+  write $ NonSpace bs
   _ <- whenSingleLineAllowed $ do
     rw <- asksParent remainingWidth
-    tellParent mempty { singleLine = bs <$ guard (BS.length bs <= rw) }
+    tellParent mempty { singleLine = pure (NonSpace bs) <$ guard (BS.length bs <= rw) }
   pure ()
 
 -- | Just a space
 space :: CnxFmt ()
 space = do
-  write " "
+  write $ SpaceRequest $ pure Space
   void $ whenSingleLineAllowed $
-    tellParent mempty { singleLine = pure " " }
+    tellParent mempty { singleLine = pure [SpaceRequest ()] }
 
 -- | Adds a newline and starts an indented block.
 withIndent :: Int -> CnxFmt a -> CnxFmt a
@@ -416,26 +453,19 @@ remainingWidth inh = max 30 (78 - indent inh)
 data Synthesized = Synthesized
   { unknownTypes :: Set String
   , fallbackNodes :: Set ANode
-  , singleLine :: Ap Maybe ByteString
+  , singleLine :: Ap Maybe [Piece ()]
     -- ^
     -- singleLine represents a formatted single-line variation of the subtree, or
     -- Nothing when the line is too long, or if the original tree is multiline.
     --
-    -- When a node isn't already known to be multiline because of multiline
-    -- input, this attribute is required for determining whether it should be,
-    -- based on the size of the subexpressions. That is - by checking its
-    -- own single-line output before streaming out the multiline output.
+    -- See 'trySingleLine'
   }
   deriving (Generic, Show)
 instance Semigroup Synthesized where (<>) = gmappend
 instance Monoid Synthesized where { mappend = gmappend; mempty = gmempty }
 
-    -- TODO: Turn these considerations into design document
+    -- TODO: Turn these considerations into explanatory document
     --------------------------------------------------------------------------
-    --
-    -- Previous notes (for context, possibly outdated):
-    --
-    -- (we used to have out :: ByteString.Builder here in Synthesized)
     --
     -- We can avoid a full blown pretty printing library, because
     -- those are designed to do fancy 2D layouts, yet they are too syntax
@@ -450,48 +480,43 @@ instance Monoid Synthesized where { mappend = gmappend; mempty = gmempty }
     --     we would have had a merge conflict anyway
     --
     -- So it's important here that a single vs. multiline decision only
-    -- affects a single "single" line - not this:
+    -- affects one place. For example:
     --
+    --  Input:
+    --
+    --  {
+    --    a = too long for line;
+    --    b = short;
+    --  }
+    --
+    --  Desirable:                 Not desirable:
     --  {                          {
-    --    a = lineTooLong;           a =
-    --    b = short;                   oneOrMoreLines;
-    --  }                            b =
-    --    potential extra   ------>    short;
-    --       conflict              }
+    --    a =                        a =
+    --      too long                   too long
+    --        for line;                  for line;
+    --    b = short;           .-->  b =
+    --  }                     / .->    short;
+    --    potential extra   ---'   }
+    --       conflict
     --
     -- The right hand side looks nicer, but does introduce an extra conflict
-    -- if someone else edited b before lineTooLong became too long.
+    -- if someone else edited b before the value for a became too long.
     --
-    -- Another interesting thing here is what to do if oneOrMoreLines is now
-    -- a single line, due to the extra horizontal space from the multiline-style
-    -- attribute.
-    -- The solution is simple: never go back to the single line
-    -- format. The attribute node ("bind") should detect that it's multiline
-    -- and stay that way. Of course the user is free to manually make it
-    -- compact.
+    -- Another rule to use is that multiline nodes must be formatted in the
+    -- multiline format again. Use of multiline syntax can be a hint that a
+    -- piece of code may be likely to change. For example, a short list may
+    -- be written in multiline syntax, because the user knows that the list will
+    -- be extended.
+    --
     -- This can be implementated by the formatting abstraction: it can check
     -- whether all Nodes it contains are on the same line and if not, force
     -- the multiline layout.
     --
-    -- The way to specify the layout is probably
-    --   space :: m ()   -- non-breaking
-    --   brSpace :: m () -- breakable space
-    --   line :: m ()    -- always a line break
-    --   layer :: m () -> m () -- delimiter to scope the choice of
-    --                            single-line vs multi-line
-    --                            Probably best to put a call to this around
-    --                            the result of every input node, so around the
-    --                            `formatter` function.
-    --
-    -- Back to the choice of abstraction: we want an abstraction that
-    -- can choose between alternatives we explicitly specify instead of
-    -- having the abstraction decide at its node level which is typically
-    -- too fine grained.
     -- We've been working on ByteStrings because that's what both Nix and
     -- tree-sitter do. Sticking to ByteStrings may be nice. We can still
-    -- count UTF8 code points to make it nice. (I know code points aren't
-    -- glyphs, but you have to draw a line - what's the width of a 'glyph'
-    -- anyway?)
+    -- count UTF8 code points to make it nicer. (I know code points aren't
+    -- glyphs, but you have to draw a line (no pun intended) - what's the width
+    -- of a 'glyph' anyway?)
 
 -- Cofree [] Node: rose tree (n-ary tree) with Node as the label for each node
 mkTree :: Node -> IO (Cofree [] Node)
