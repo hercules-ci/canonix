@@ -32,7 +32,11 @@ common src-main
 library
   import:              src-main
   exposed-modules:     Format
-                       Canonix.Monad
+                       Canonix.Monad.CnxFmt
+                       Canonix.Monad.Fmt
+                       Canonix.Node
+                       Canonix.Space
+                       Canonix.TreeSitter
 
 executable canonix
   main-is:             Main.hs
@@ -49,8 +53,12 @@ test-suite canonix-tests
   type: exitcode-stdio-1.0
   main-is: Main.hs
   other-modules:
-    Canonix.Monad
-    Format
+                       Canonix.Monad.CnxFmt
+                       Canonix.Monad.Fmt
+                       Canonix.Node
+                       Canonix.Space
+                       Canonix.TreeSitter
+                       Format
   hs-source-dirs: tests, src
   ghc-options: -Wall -threaded
   build-depends:
