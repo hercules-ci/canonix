@@ -56,10 +56,9 @@ renderSpaces = go Nothing
 piecesLength :: [Piece ()] -> Int
 piecesLength = f mempty
  where
-   f ws (NonSpace bs : pcs') = 
-      length ws + BS.length bs + f mempty pcs'
-   f ws (SpaceRequest ws2 : pcs') = f (ws <> Just ws2) pcs'
-   f _ [] = 0
+  f ws (NonSpace     bs  : pcs') = length ws + BS.length bs + f mempty pcs'
+  f ws (SpaceRequest ws2 : pcs') = f (ws <> Just ws2) pcs'
+  f _  []                        = 0
 
 charCode :: Char -> Word8
 charCode = fromIntegral . ord

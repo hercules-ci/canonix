@@ -1,7 +1,6 @@
 module Canonix.Node
- (
-   Node(..)
-)
+  ( Node(..)
+  )
 where
 
 import           TreeSitter.Nix

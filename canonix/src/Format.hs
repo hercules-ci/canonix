@@ -148,136 +148,136 @@ pattern a :*: b = (a, b)
 formatter :: Node -> [(Node, CnxFmt ())] -> CnxFmt ()
 formatter self children = withSelf self $ trySingleLine $
   case (typ self, children) of
-            -- Expression is the root node of a file
-            (Expression, _) -> do
-              mconcat <$> traverse snd children
-              newline
+    -- Expression is the root node of a file
+    (Expression, _) -> do
+      mconcat <$> traverse snd children
+      newline
 
-            (Function,
-              One Formals formals (One AnonColon colon (One _ body []))) -> do
-              formals
-              colon
-              withOptionalIndent 2 body
+    (Function,
+      One Formals formals (One AnonColon colon (One _ body []))) -> do
+      formals
+      colon
+      withOptionalIndent 2 body
 
-            (Function,
-              One Identifier i (One AnonColon colon (One Function body []))) -> do
-              i
-              colon
-              space
-              body
+    (Function,
+      One Identifier i (One AnonColon colon (One Function body []))) -> do
+      i
+      colon
+      space
+      body
 
-            (Function, One Identifier i (One AnonColon colon (One _ body []))) -> do
-              i
-              colon
-              withOptionalIndent 2 body
+    (Function, One Identifier i (One AnonColon colon (One _ body []))) -> do
+      i
+      colon
+      withOptionalIndent 2 body
 
-            (Formals, One AnonLBracket open rest) -> do
-              open
-              traverse_ snd rest
+    (Formals, One AnonLBracket open rest) -> do
+      open
+      traverse_ snd rest
 
-            (Formal, One Identifier i []) ->
-              i
+    (Formal, One Identifier i []) ->
+      i
 
-            (Formal, One Identifier i (One AnonQuestion q (One _ e []))) -> do
-              i
-              space
-              q
-              space
-              e
+    (Formal, One Identifier i (One AnonQuestion q (One _ e []))) -> do
+      i
+      space
+      q
+      space
+      e
 
-            (App, [(_, a),(_, b)]) -> do
-              a
-              space
-              b
+    (App, [(_, a),(_, b)]) -> do
+      a
+      space
+      b
 
-            (Let,
-              One Let l
-                (spanTypes [Bind, Inherit] -> bindings :*:
-                  (One AnonIn inkw
-                    (One bodyTyp body [])
-                  )
-                )
-              ) -> do
-              l
-              withIndent 2 $
-                traverse_ snd bindings
-              newline
-              inkw
-              if bodyTyp == Attrset
-              then do
-                space
-                body
-              else
-                withIndent 2 body
+    (Let,
+      One Let l
+        (spanTypes [Bind, Inherit] -> bindings :*:
+          (One AnonIn inkw
+            (One bodyTyp body [])
+          )
+        )
+      ) -> do
+      l
+      withIndent 2 $
+        traverse_ snd bindings
+      newline
+      inkw
+      if bodyTyp == Attrset
+      then do
+        space
+        body
+      else
+        withIndent 2 body
 
-            (Bind, One Attrpath a (One AnonEqual eq1 (One _ v (One AnonSemicolon sc [])))) -> do
-              a
-              space
-              eq1
-              withIndent 2 $ do
-                v
-                sc
-              newline
+    (Bind, One Attrpath a (One AnonEqual eq1 (One _ v (One AnonSemicolon sc [])))) -> do
+      a
+      space
+      eq1
+      withIndent 2 $ do
+        v
+        sc
+      newline
 
-            (Inherit, (One Inherit inhKw (One Parenthesized p (One Attrs attrs (One AnonSemicolon sc []))))) -> do
-              inhKw
-              space
-              p
-              withIndent 2 $ do
-                space
-                attrs
-              sc
-              newline
+    (Inherit, (One Inherit inhKw (One Parenthesized p (One Attrs attrs (One AnonSemicolon sc []))))) -> do
+      inhKw
+      space
+      p
+      withIndent 2 $ do
+        space
+        attrs
+      sc
+      newline
 
-            (Inherit, (One Inherit inhKw (One Attrs attrs (One AnonSemicolon sc [])))) -> do -- FIXME specific attrs
-              inhKw
-              withIndent 2 $ do
-                space
-                attrs
-              sc
-              newline
+    (Inherit, (One Inherit inhKw (One Attrs attrs (One AnonSemicolon sc [])))) -> do -- FIXME specific attrs
+      inhKw
+      withIndent 2 $ do
+        space
+        attrs
+      sc
+      newline
 
-            (Attrset,
-              One AnonLBrace open
-                (spanTypes [Bind, Inherit] -> bindings :*:
-                  Comments finalComments (
-                    One AnonRBrace close []
-                  )
-                )
-              ) -> do
-              open
-              withIndent' 2 $ do
-                forM_ bindings $ \(_, i) -> do
-                  newline
-                  i
-                mapM_ snd finalComments
-              newline -- ??
-              close
+    (Attrset,
+      One AnonLBrace open
+        (spanTypes [Bind, Inherit] -> bindings :*:
+          Comments finalComments (
+            One AnonRBrace close []
+          )
+        )
+      ) -> do
+      open
+      withIndent' 2 $ do
+        forM_ bindings $ \(_, i) -> do
+          newline
+          i
+        mapM_ snd finalComments
+      newline -- ??
+      close
 
-            (Attrs, as) | all (\(x, _) -> typ x == Identifier) as ->
-              forM_ as $ \(_, i) -> do
-                space
-                i
+    (Attrs, as) | all (\(x, _) -> typ x == Identifier) as ->
+      forM_ as $ \(_, i) -> do
+        space
+        i
 
-            (AnonRBracket, []) -> verbatim self
-            (AnonLBracket, []) -> verbatim self
-            (AnonRBrace, []) -> verbatim self
-            (AnonLBrace, []) -> verbatim self
-            (AnonColon, []) -> verbatim self
-            (Identifier, []) -> verbatim self
-            (AnonEqual, []) -> verbatim self
-            (AnonIn, []) -> verbatim self
-            (Inherit, []) -> verbatim self
-            (Let, []) -> verbatim self
-            (AnonQuestion, []) -> verbatim self
-            (AnonSemicolon, []) -> verbatim self
-            (Spath, []) -> verbatim self
-            (Integer, []) -> verbatim self
-            (Comment, []) -> do
-              forceMultiline
-              newline -- TODO: clearline
-              verbatim self
-              newline
-            (_x, _y) -> do
-              tellParent mempty { fallbackNodes = S.singleton self }
-              verbatim self
+    (AnonRBracket, []) -> verbatim self
+    (AnonLBracket, []) -> verbatim self
+    (AnonRBrace, []) -> verbatim self
+    (AnonLBrace, []) -> verbatim self
+    (AnonColon, []) -> verbatim self
+    (Identifier, []) -> verbatim self
+    (AnonEqual, []) -> verbatim self
+    (AnonIn, []) -> verbatim self
+    (Inherit, []) -> verbatim self
+    (Let, []) -> verbatim self
+    (AnonQuestion, []) -> verbatim self
+    (AnonSemicolon, []) -> verbatim self
+    (Spath, []) -> verbatim self
+    (Integer, []) -> verbatim self
+    (Comment, []) -> do
+      forceMultiline
+      newline -- TODO: clearline
+      verbatim self
+      newline
+    (_x, _y) -> do
+      tellParent mempty { fallbackNodes = S.singleton self }
+      verbatim self

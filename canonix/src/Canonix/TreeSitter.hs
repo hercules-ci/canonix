@@ -60,10 +60,9 @@ dump source i nd = do
   void $ forChildren nd $ \c -> dump source (i + 1) c
 
 abstract :: TS.Node -> Node
-abstract n =
-  Node
-    { typ = toEnum (fromEnum (nodeSymbol n))
-    , startByte = fromIntegral $ nodeStartByte n
-    , endByte = fromIntegral $ nodeEndByte n
-    , isMultiline = pointRow (nodeStartPoint n) /= pointRow (nodeEndPoint n)
-    }
+abstract n = Node
+  { typ         = toEnum (fromEnum (nodeSymbol n))
+  , startByte   = fromIntegral $ nodeStartByte n
+  , endByte     = fromIntegral $ nodeEndByte n
+  , isMultiline = pointRow (nodeStartPoint n) /= pointRow (nodeEndPoint n)
+  }

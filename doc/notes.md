@@ -1,5 +1,5 @@
 
-Some notes by @roberth, explaning technical design decisions and formatting
+Some notes, explaning technical design decisions and formatting
 decisions.
 
 We can avoid a full blown pretty printing library, because
