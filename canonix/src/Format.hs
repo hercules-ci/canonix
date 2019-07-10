@@ -115,7 +115,7 @@ withSelf self fmt = do
 matchOneOfTypeWithComments :: Applicative m => [(Node, m a)] -> Maybe (Grammar, m a, [(Node, m a)])
 matchOneOfTypeWithComments = go id
   where
-    go acc ((n, a) : as) | typ n == Comment = go ((a *>) . acc) as
+    go acc ((n, a) : as) | typ n == Comment = go (acc . (a *>)) as
     go acc ((t, a) : as) = Just (typ t, (acc a), as)
     go _ [] = Nothing
 
