@@ -1,6 +1,6 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
-module Canonix.Monad
+module Canonix.Monad.Fmt
   (
     -- * Fmt monad
     --
@@ -36,6 +36,7 @@ import           Pipes
 import qualified Pipes.Prelude                 as PPl
 import qualified Pipes.Lift                    as PL
 
+-- | A monad facilitating data flows for tree computations that also produce streams.
 newtype Fmt inh syn o e a = Fmt
   { fromFmt :: Producer o (ReaderT inh (StateT syn (ExceptT e Identity))) a
   } deriving (Functor, Applicative, Monad)

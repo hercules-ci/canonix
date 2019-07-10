@@ -1,17 +1,15 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE LambdaCase #-}
 module Format where
 
-import           Canonix.Monad
-import qualified Control.Exception
+import           Canonix.Node
+import           Canonix.Space
+import           Canonix.TreeSitter
+import           Canonix.Monad.CnxFmt
 import           Control.Comonad.Cofree
 import qualified Control.Comonad.Trans.Cofree as T
+import qualified Control.Exception
 import           Control.Monad
 import           Control.Monad.Identity
 import           Control.Monad.State
@@ -19,30 +17,18 @@ import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as BB
 import qualified Data.ByteString.Lazy          as BL
-import           Data.Char                      ( ord )
-import           Data.Monoid                    ( Ap(Ap), Last )
 import           Data.Foldable
 import           Data.Functor.Foldable
-import           Data.Semigroup                 ( Max(Max) )
-import           Data.Semigroup.Generic
-import           Data.Set                       ( Set )
 import qualified Data.Set                      as S
-import           Data.Word                      ( Word8 )
 import           Foreign.Marshal.Alloc          ( malloc )
-import           Foreign.Marshal.Array          ( peekArray
-                                                , allocaArray
-                                                )
-import           Foreign.Marshal.Utils          ( with )
 import           Foreign.Ptr                    ( nullPtr )
 import           Foreign.Storable               ( peek )
-import           GHC.Generics                   ( Generic )
+import           Pipes
+import qualified Pipes.Lift
 import           System.IO
 import           TreeSitter.Nix
-import           TreeSitter.Node
 import           TreeSitter.Parser
 import           TreeSitter.Tree
-import Pipes
-import qualified Pipes.Lift
 -- import Debug.Trace (trace)
 
 traceDemand :: String -> a -> a
@@ -50,34 +36,29 @@ traceDemand = flip const  -- folds away the debug statements
 -- traceDemand = trace  -- should show an interleaving of Chunk production and Node demand
 
 format :: Bool -> ByteString -> IO BL.ByteString
-format debug source = do
+format debug src = do
+  -- TODO: bracket patterns and move to Canonix.TreeSitter
   parser <- ts_parser_new
   _ <- ts_parser_set_language parser tree_sitter_nix
 
-  BS.useAsCStringLen source $ \(str, len) -> do
+  BS.useAsCStringLen src $ \(str, len) -> do
 
     ttree       <- ts_parser_parse_string parser nullPtr str len
 
     n          <- malloc
     ts_tree_root_node_p ttree n
 
-    root@Node {..} <- peek n
+    root <- peek n
 
-    let
-      dump :: Int -> Node -> IO ()
-      dump i nd = do
-        printNode i source nd
-        void $ forChildren nd $ \c ->
-          dump (i+1) c
-    when debug $ dump 0 root
+    when debug $ dump src 0 root
 
     tree <- mkTree root
     let 
-      (_ast, cnxfmt) = bottomUp (fmap (lg . abstract) tree) formatter
+      (_ast, cnxfmt) = walk (fmap (lg . abstract) tree) formatter
       lg nd = traceDemand ("Demanding " <> show nd) nd
 
       produce = do
-        r <- Pipes.hoist (pure . runIdentity) (runFmt (cnxfmt >> write (SpaceRequest (pure 0, Linebreak 0)) >> write (NonSpace "")) (rootInherited source)) >-> renderSpaces >-> forever (await >>= (yield . Left))
+        r <- Pipes.hoist (pure . runIdentity) (runFmt (cnxfmt >> finalNewline) (rootInherited src)) >-> renderSpaces >-> forever (await >>= (yield . Left))
         yield (Right r)
         liftIO $ Control.Exception.throwIO $ Control.Exception.AssertionFailed "Can't consume past end"
 
@@ -116,435 +97,187 @@ format debug source = do
 
     Pipes.runEffect (produce >-> consume)
 
-renderSpaces :: Monad m => Pipe (Piece (Indented LogicalSpace)) ByteString m a
-renderSpaces = f Nothing
- where
-   f ws = await >>= \case
-        NonSpace bs -> do
-          writeSpace ws
-          yield bs
-          f Nothing
-        SpaceRequest ws2 -> f (ws <> Just ws2)
 
-   writeSpace = mapM_ $ \case
-                  (_, Space) -> yield " "
-                  (ind, Linebreak (Max n)) -> yield (BS.replicate (n + 1) (charCode '\n')) >> writeInd ind
-   writeInd ind = forM_ ind $ \i -> yield (BS.replicate i (charCode ' '))
-
-piecesLength :: [Piece ()] -> Int
-piecesLength = f mempty
- where
-   f ws (NonSpace bs : pcs') = 
-      length ws + BS.length bs + f mempty pcs'
-   f ws (SpaceRequest ws2 : pcs') = f (ws <> Just ws2) pcs'
-   f _ [] = 0
-
-bottomUp :: Cofree [] ANode -> (ANode -> [(ANode, a)] -> a) -> (ANode, a)
-bottomUp t f = cataA (\(self T.:< c) -> (self, f self c)) t
-
--- | "Abstract" node
+-- | Traverse a tree, invoking the provided function at each node.
 --
--- TODO: Put in separate module and just call it Node
-data ANode = ANode
-  { startByte :: {-# UNPACK #-}!Int
-  , endByte :: {-# UNPACK #-}!Int
-  , typ :: !Grammar
-  , isMultiline :: !Bool -- TODO: maybe preserve line numbers instead so we can figure out which parts of a construct are multiline
-  } deriving (Eq, Ord, Show)
-
-abstract :: Node -> ANode
-abstract n =
-  ANode
-    { typ = toEnum (fromEnum (nodeSymbol n))
-    , startByte = fromIntegral $ nodeStartByte n
-    , endByte = fromIntegral $ nodeEndByte n
-    , isMultiline = pointRow (nodeStartPoint n) /= pointRow (nodeEndPoint n)
-    }
-
-type ErrorMessage = String
-
-data Piece ws
-  = NonSpace !ByteString
-  | SpaceRequest !ws
-  deriving (Show, Functor)
-
-type Indented a = (Last Int, a)
-
-data LogicalSpace = Space | Linebreak (Max Int)
-  deriving Show
-
-instance Semigroup LogicalSpace where
-  Space <> x = x
-  x <> Space = x
-  Linebreak x <> Linebreak y = Linebreak (x <> y)
-
-type CnxFmt = Fmt Inherited Synthesized (Piece (Indented LogicalSpace)) ErrorMessage
-
--- | Runs its argument only if outputting a single line is a possibility.
-whenSingleLineAllowed :: CnxFmt a -> CnxFmt (Maybe a)
-whenSingleLineAllowed fmt = do
-  allowed <- asksParent singleLineAllowed
-  forM (guard allowed) (const fmt)
-
--- | Declare that the single-line format has failed, ensuring that the
--- multiline-style output will be written.
-forceMultiline :: CnxFmt ()
-forceMultiline = tellParent mempty { singleLine = Ap Nothing }
-
--- | Try to use the single line format. This is how the multiline format can
--- use the single line format.
-trySingleLine :: CnxFmt a -> CnxFmt a
-trySingleLine fmt = do
-  allowed <- asksParent singleLineAllowed
-  if not allowed then fmt
-  else do
-    rw      <- asksParent remainingWidth
-    censorWrites (censorChildren fmt $ \syn a -> do
-      let
-        ln :: Ap Maybe [Piece ()]
-        ln = do
-          l0 <- singleLine syn
-          l0 <$ guard (piecesLength l0 <= rw) -- TODO: unicode width
-
-      (ln, a) <$ tellParent (syn { singleLine = ln })
-      ) $ \multilineChunks (ln, a) -> do
-      case ln of
-        Ap (Just l) ->
-          mapM_ (write . (pure Space <$)) l
-        _ -> mapM_ write multilineChunks
-      pure a
+-- The function is responsible for visiting the children that are passed in.
+--
+-- The original values for the children made available directly to the function.
+walk :: Cofree [] Node -> (Node -> [(Node, a)] -> a) -> (Node, a)
+walk t f = cataA (\(self T.:< c) -> (self, f self c)) t
 
 -- | Tell the children what they need to know from their parent.
-withSelf :: ANode -> CnxFmt () -> CnxFmt ()
+withSelf :: Node -> CnxFmt () -> CnxFmt ()
 withSelf self fmt = do
   inh <- askParent
   tellChildren inh { singleLineAllowed = not (isMultiline self) } fmt
 
-matchOneOfTypeWithComments :: Applicative m => [(ANode, m a)] -> Maybe (Grammar, m a, [(ANode, m a)])
+matchOneOfTypeWithComments :: Applicative m => [(Node, m a)] -> Maybe (Grammar, m a, [(Node, m a)])
 matchOneOfTypeWithComments = go id
   where
     go acc ((n, a) : as) | typ n == Comment = go ((a *>) . acc) as
     go acc ((t, a) : as) = Just (typ t, (acc a), as)
     go _ [] = Nothing
 
-matchOneWithComments :: Applicative m => (ANode -> Bool) -> [(ANode, m a)] -> Maybe (Grammar, m a, [(ANode, m a)])
+matchOneWithComments :: Applicative m => (Node -> Bool) -> [(Node, m a)] -> Maybe (Grammar, m a, [(Node, m a)])
 matchOneWithComments p = go id
   where
     go acc ((n, a) : as) | p n = Just (typ n, (acc a), as)
     go acc ((n, a) : as) | typ n == Comment = go (acc . (a *>)) as
     go _ _ = Nothing
 
-matchManyOfTypeWithComments :: Applicative m => (ANode -> Bool) -> [(ANode, m a)] -> ([(Grammar, m a)], [(ANode, m a)])
+matchManyOfTypeWithComments :: Applicative m => (Node -> Bool) -> [(Node, m a)] -> ([(Grammar, m a)], [(Node, m a)])
 matchManyOfTypeWithComments p = go id
   where
     go acc l = case matchOneWithComments p l of
                       Just (g, m, rest) -> go (acc . ((g, m):)) rest
                       Nothing -> (acc [], l)
 
-pattern One :: Applicative m => Grammar -> m a -> [(ANode, m a)] -> [(ANode, m a)]
+pattern One :: Applicative m => Grammar -> m a -> [(Node, m a)] -> [(Node, m a)]
 pattern One t m rest <- (matchOneOfTypeWithComments -> Just (t, m, rest))
 
-spanTypes :: Applicative m => [Grammar] -> [(ANode, m a)] -> ([(Grammar, m a)], [(ANode, m a)])
+spanTypes :: Applicative m => [Grammar] -> [(Node, m a)] -> ([(Grammar, m a)], [(Node, m a)])
 spanTypes ts = matchManyOfTypeWithComments (\x -> typ x `elem` ts)
 
-pattern Comments :: Applicative m => [(Grammar, m a)] -> [(ANode, m a)] -> [(ANode, m a)]
+pattern Comments :: Applicative m => [(Grammar, m a)] -> [(Node, m a)] -> [(Node, m a)]
 pattern Comments cs rest <- (spanTypes [Comment] -> (cs, rest))
 
 pattern (:*:) :: a -> b -> (a, b)
 pattern a :*: b = (a, b)
 
-formatter :: ANode -> [(ANode, CnxFmt ())] -> CnxFmt ()
+formatter :: Node -> [(Node, CnxFmt ())] -> CnxFmt ()
 formatter self children = withSelf self $ trySingleLine $
   case (typ self, children) of
-            -- Expression is the root node of a file
-            (Expression, _) -> do
-              mconcat <$> traverse snd children
-              newline
+    -- Expression is the root node of a file
+    (Expression, _) -> do
+      mconcat <$> traverse snd children
+      newline
 
-            (Function,
-              One Formals formals (One AnonColon colon (One _ body []))) -> do
-              formals
-              colon
-              withOptionalIndent 2 body
+    (Function,
+      One Formals formals (One AnonColon colon (One _ body []))) -> do
+      formals
+      colon
+      withOptionalIndent 2 body
 
-            (Function,
-              One Identifier i (One AnonColon colon (One Function body []))) -> do
-              i
-              colon
-              space
-              body
+    (Function,
+      One Identifier i (One AnonColon colon (One Function body []))) -> do
+      i
+      colon
+      space
+      body
 
-            (Function, One Identifier i (One AnonColon colon (One _ body []))) -> do
-              i
-              colon
-              withOptionalIndent 2 body
+    (Function, One Identifier i (One AnonColon colon (One _ body []))) -> do
+      i
+      colon
+      withOptionalIndent 2 body
 
-            (Formals, One AnonLBracket open rest) -> do
-              open
-              traverse_ snd rest
+    (Formals, One AnonLBracket open rest) -> do
+      open
+      traverse_ snd rest
 
-            (Formal, One Identifier i []) ->
-              i
+    (Formal, One Identifier i []) ->
+      i
 
-            (Formal, One Identifier i (One AnonQuestion q (One _ e []))) -> do
-              i
-              space
-              q
-              space
-              e
+    (Formal, One Identifier i (One AnonQuestion q (One _ e []))) -> do
+      i
+      space
+      q
+      space
+      e
 
-            (App, [(_, a),(_, b)]) -> do
-              a
-              space
-              b
+    (App, [(_, a),(_, b)]) -> do
+      a
+      space
+      b
 
-            (Let,
-              One Let l
-                (spanTypes [Bind, Inherit] -> bindings :*:
-                  (One AnonIn inkw
-                    (One bodyTyp body [])
-                  )
-                )
-              ) -> do
-              l
-              withIndent 2 $
-                traverse_ snd bindings
-              newline
-              inkw
-              if bodyTyp == Attrset
-              then do
-                space
-                body
-              else
-                withIndent 2 body
+    (Let,
+      One Let l
+        (spanTypes [Bind, Inherit] -> bindings :*:
+          (One AnonIn inkw
+            (One bodyTyp body [])
+          )
+        )
+      ) -> do
+      l
+      withIndent 2 $
+        traverse_ snd bindings
+      newline
+      inkw
+      if bodyTyp == Attrset
+      then do
+        space
+        body
+      else
+        withIndent 2 body
 
-            (Bind, One Attrpath a (One AnonEqual eq1 (One _ v (One AnonSemicolon sc [])))) -> do
-              a
-              space
-              eq1
-              withIndent 2 $ do
-                v
-                sc
-              newline
+    (Bind, One Attrpath a (One AnonEqual eq1 (One _ v (One AnonSemicolon sc [])))) -> do
+      a
+      space
+      eq1
+      withIndent 2 $ do
+        v
+        sc
+      newline
 
-            (Inherit, (One Inherit inhKw (One Parenthesized p (One Attrs attrs (One AnonSemicolon sc []))))) -> do
-              inhKw
-              space
-              p
-              withIndent 2 $ do
-                space
-                attrs
-              sc
-              newline
+    (Inherit, (One Inherit inhKw (One Parenthesized p (One Attrs attrs (One AnonSemicolon sc []))))) -> do
+      inhKw
+      space
+      p
+      withIndent 2 $ do
+        space
+        attrs
+      sc
+      newline
 
-            (Inherit, (One Inherit inhKw (One Attrs attrs (One AnonSemicolon sc [])))) -> do -- FIXME specific attrs
-              inhKw
-              withIndent 2 $ do
-                space
-                attrs
-              sc
-              newline
+    (Inherit, (One Inherit inhKw (One Attrs attrs (One AnonSemicolon sc [])))) -> do -- FIXME specific attrs
+      inhKw
+      withIndent 2 $ do
+        space
+        attrs
+      sc
+      newline
 
-            (Attrset,
-              One AnonLBrace open
-                (spanTypes [Bind, Inherit] -> bindings :*:
-                  Comments finalComments (
-                    One AnonRBrace close []
-                  )
-                )
-              ) -> do
-              open
-              withIndent' 2 $ do
-                forM_ bindings $ \(_, i) -> do
-                  newline
-                  i
-                mapM_ snd finalComments
-              newline -- ??
-              close
+    (Attrset,
+      One AnonLBrace open
+        (spanTypes [Bind, Inherit] -> bindings :*:
+          Comments finalComments (
+            One AnonRBrace close []
+          )
+        )
+      ) -> do
+      open
+      withIndent' 2 $ do
+        forM_ bindings $ \(_, i) -> do
+          newline
+          i
+        mapM_ snd finalComments
+      newline -- ??
+      close
 
-            (Attrs, as) | all (\(x, _) -> typ x == Identifier) as ->
-              forM_ as $ \(_, i) -> do
-                space
-                i
+    (Attrs, as) | all (\(x, _) -> typ x == Identifier) as ->
+      forM_ as $ \(_, i) -> do
+        space
+        i
 
-            (AnonRBracket, []) -> verbatim self
-            (AnonLBracket, []) -> verbatim self
-            (AnonRBrace, []) -> verbatim self
-            (AnonLBrace, []) -> verbatim self
-            (AnonColon, []) -> verbatim self
-            (Identifier, []) -> verbatim self
-            (AnonEqual, []) -> verbatim self
-            (AnonIn, []) -> verbatim self
-            (Inherit, []) -> verbatim self
-            (Let, []) -> verbatim self
-            (AnonQuestion, []) -> verbatim self
-            (AnonSemicolon, []) -> verbatim self
-            (Spath, []) -> verbatim self
-            (Integer, []) -> verbatim self
-            (Comment, []) -> do
-              forceMultiline
-              newline -- TODO: clearline
-              verbatim self
-              newline
-            (_x, _y) -> do
-              tellParent mempty { fallbackNodes = S.singleton self }
-              verbatim self
-
--- | A newline in multiline format, but a space in single line format
-newline :: CnxFmt ()
-newline = do
-  ind <- asksParent indent
-  write $ SpaceRequest (pure ind, Linebreak 0)
-  void $ whenSingleLineAllowed $
-    tellParent mempty { singleLine = pure [SpaceRequest ()] }
-
--- | Copy a node to the output without any changes
-verbatim :: ANode -> CnxFmt ()
-verbatim n = do
-  src <- asksParent source
-  let bs = BS.drop (startByte n) (BS.take (endByte n) src)
-  write $ NonSpace bs
-  _ <- whenSingleLineAllowed $ do
-    rw <- asksParent remainingWidth
-    tellParent mempty { singleLine = pure (NonSpace bs) <$ guard (BS.length bs <= rw) }
-  pure ()
-
--- | Just a space
-space :: CnxFmt ()
-space = do
-  write $ SpaceRequest $ pure Space
-  void $ whenSingleLineAllowed $
-    tellParent mempty { singleLine = pure [SpaceRequest ()] }
-
--- | Adds a newline and starts an indented block.
-withIndent :: Int -> CnxFmt a -> CnxFmt a
-withIndent n m = do
-  inh <- askParent
-  tellChildren (inh { indent = indent inh + n }) (newline *> m)
-
--- | Declare increased indentation while appending to the current line
-withIndent' :: Int -> CnxFmt a -> CnxFmt a
-withIndent' n m = do
-  inh <- askParent
-  tellChildren (inh { indent = indent inh + n }) m
-
--- | Indent except at top level.
---
--- Always creates a new line, like 'withIndent'.
-withOptionalIndent :: Int -> CnxFmt a -> CnxFmt a
-withOptionalIndent n m = do
-  tl <- asksParent indent
-  if (tl == 0) then (newline *> m) else withIndent n m
-
-charCode :: Char -> Word8
-charCode = fromIntegral . ord
-
-data Inherited = Inherited
-  { indent :: Int
-  , source :: ByteString
-  , singleLineAllowed :: Bool
-  }
-rootInherited :: ByteString -> Inherited
-rootInherited bs = Inherited { indent = 0, source = bs, singleLineAllowed = False }
-
-remainingWidth :: Inherited -> Int
-remainingWidth inh = max 30 (78 - indent inh)
-
-data Synthesized = Synthesized
-  { unknownTypes :: Set String
-  , fallbackNodes :: Set ANode
-  , singleLine :: Ap Maybe [Piece ()]
-    -- ^
-    -- singleLine represents a formatted single-line variation of the subtree, or
-    -- Nothing when the line is too long, or if the original tree is multiline.
-    --
-    -- See 'trySingleLine'
-  }
-  deriving (Generic, Show)
-instance Semigroup Synthesized where (<>) = gmappend
-instance Monoid Synthesized where { mappend = gmappend; mempty = gmempty }
-
-    -- TODO: Turn these considerations into explanatory document
-    --------------------------------------------------------------------------
-    --
-    -- We can avoid a full blown pretty printing library, because
-    -- those are designed to do fancy 2D layouts, yet they are too syntax
-    -- directed. What we typically want for merge-friendly layout is at
-    -- most two layouts per given node type. A single-line one and a
-    -- multiline one. Expanding all ancestry to multi-line layout greedily
-    -- whenever a line is full seems like a good idea:
-    --   - multi-line is good for merges, so we want more of it
-    --   - greedy is good because it reduces the number of possible
-    --     solutions for a given source text, reducing conflicts
-    --   - if someone edits the single line without having had to expand it
-    --     we would have had a merge conflict anyway
-    --
-    -- So it's important here that a single vs. multiline decision only
-    -- affects one place. For example:
-    --
-    --  Input:
-    --
-    --  {
-    --    a = too long for line;
-    --    b = short;
-    --  }
-    --
-    --  Desirable:                 Not desirable:
-    --  {                          {
-    --    a =                        a =
-    --      too long                   too long
-    --        for line;                  for line;
-    --    b = short;           .-->  b =
-    --  }                     / .->    short;
-    --    potential extra   ---'   }
-    --       conflict
-    --
-    -- The right hand side looks nicer, but does introduce an extra conflict
-    -- if someone else edited b before the value for a became too long.
-    --
-    -- Another rule to use is that multiline nodes must be formatted in the
-    -- multiline format again. Use of multiline syntax can be a hint that a
-    -- piece of code may be likely to change. For example, a short list may
-    -- be written in multiline syntax, because the user knows that the list will
-    -- be extended.
-    --
-    -- This can be implementated by the formatting abstraction: it can check
-    -- whether all Nodes it contains are on the same line and if not, force
-    -- the multiline layout.
-    --
-    -- We've been working on ByteStrings because that's what both Nix and
-    -- tree-sitter do. Sticking to ByteStrings may be nice. We can still
-    -- count UTF8 code points to make it nicer. (I know code points aren't
-    -- glyphs, but you have to draw a line (no pun intended) - what's the width
-    -- of a 'glyph' anyway?)
-
--- Cofree [] Node: rose tree (n-ary tree) with Node as the label for each node
-mkTree :: Node -> IO (Cofree [] Node)
-mkTree n = (n :<) <$> mkChildren
-  where mkChildren = forChildren n $ \c -> mkTree c
-
-forChildren :: Node -> (Node -> IO a) -> IO [a]
-forChildren n f = do
-  let count = fromIntegral $ nodeChildCount n
-  children <- allocaArray count $ \childNodesPtr -> do
-    _ <- with (nodeTSNode n) (`ts_node_copy_child_nodes` childNodesPtr)
-    peekArray count childNodesPtr
-  forM children f
-
-nodeInner :: BS.ByteString -> Node -> BS.ByteString
-nodeInner bs n =
-   BS.drop (fromIntegral $ nodeStartByte n)
-   $ BS.take (fromIntegral $ nodeEndByte n) bs
-
-printNode :: Int -> BS.ByteString -> Node -> IO ()
-printNode ind source n@Node {..} = do
-  let start =
-        let TSPoint {..} = nodeStartPoint
-        in  "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
-      end =
-        let TSPoint {..} = nodeEndPoint
-        in  "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
-      typ :: Grammar
-      typ = toEnum $ fromEnum $ nodeSymbol
-  hPutStrLn stderr $ replicate (ind*2) ' ' ++ show typ ++ start ++ "-" ++ end
-  hPutStrLn stderr $ replicate (ind*2) ' ' ++ show (nodeInner source n)
+    (AnonRBracket, []) -> verbatim self
+    (AnonLBracket, []) -> verbatim self
+    (AnonRBrace, []) -> verbatim self
+    (AnonLBrace, []) -> verbatim self
+    (AnonColon, []) -> verbatim self
+    (Identifier, []) -> verbatim self
+    (AnonEqual, []) -> verbatim self
+    (AnonIn, []) -> verbatim self
+    (Inherit, []) -> verbatim self
+    (Let, []) -> verbatim self
+    (AnonQuestion, []) -> verbatim self
+    (AnonSemicolon, []) -> verbatim self
+    (Spath, []) -> verbatim self
+    (Integer, []) -> verbatim self
+    (Comment, []) -> do
+      forceMultiline
+      newline -- TODO: clearline
+      verbatim self
+      newline
+    (_x, _y) -> do
+      tellParent mempty { fallbackNodes = S.singleton self }
+      verbatim self
