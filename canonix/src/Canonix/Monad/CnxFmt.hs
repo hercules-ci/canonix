@@ -22,6 +22,10 @@ module Canonix.Monad.CnxFmt
   , tellParent
   , censorChildren
 
+    -- * Start-to-end
+  , Preceding
+  , rootPreceding
+
     -- * Formatting functions
 
   , verbatim
@@ -50,7 +54,7 @@ import           Data.Set                       ( Set )
 import           GHC.Generics                   ( Generic )
 
 type CnxFmt
-  = Fmt Inherited Synthesized (Piece (Indented LogicalSpace)) ErrorMessage
+  = Fmt Inherited Synthesized Preceding (Piece (Indented LogicalSpace)) ErrorMessage
 
 type ErrorMessage = String
 
@@ -87,6 +91,10 @@ instance Semigroup Synthesized where (<>) = gmappend
 instance Monoid Synthesized where { mappend = gmappend; mempty = gmempty }
 
 
+
+data Preceding = Preceding
+rootPreceding :: Preceding
+rootPreceding = Preceding
 
 -- | Copy a node to the output without any changes
 verbatim :: Node -> CnxFmt ()

@@ -21,6 +21,11 @@ module Canonix.Monad.Fmt
   , censorChildren
   , tellParent
 
+    -- * Start-to-end data flow
+  , askPreceding
+  , tellSucceeding
+  , precedingState
+
     -- * Stream-like output with exceptions
   , write
   , censorWrites
@@ -32,63 +37,79 @@ import           Control.Monad.Reader
 import           Control.Monad.State.Strict
 import           Control.Monad.Except
 import           Control.Monad.Identity
+import           Data.Function
 import           Pipes
 import qualified Pipes.Prelude                 as PPl
 import qualified Pipes.Lift                    as PL
 
 -- | A monad facilitating data flows for tree computations that also produce streams.
-newtype Fmt inh syn o e a = Fmt
-  { fromFmt :: Producer o (ReaderT inh (StateT syn (ExceptT e Identity))) a
+newtype Fmt inh syn pre o e a = Fmt
+  { fromFmt :: Producer o (ReaderT inh (StateT (syn, pre) (ExceptT e Identity))) a
   } deriving (Functor, Applicative, Monad)
 
 runFmt
   :: Monoid syn
-  => Fmt inh syn o e a
+  => Fmt inh syn pre o e a
   -> inh
-  -> Producer o Identity (Either e (syn, a))
-runFmt (Fmt m) inh =
-  fmap (fmap swap) $ PL.runExceptP $ PL.runStateP mempty $ PL.runReaderP inh m
+  -> pre
+  -> Producer o Identity (Either e (syn, pre, a))
+runFmt (Fmt m) inh pre0 =
+  fmap (fmap swoosh)
+    $ PL.runExceptP
+    $ PL.runStateP (mempty, pre0)
+    $ PL.runReaderP inh m
  where
-  swap :: (a, b) -> (b, a)
-  swap (a, b) = (b, a)
+  swoosh (c, (a, b)) = (a, b, c)
 
-askParent :: Fmt inh syn o e inh
+askParent :: Fmt inh syn pre o e inh
 askParent = Fmt $ ask
 
-asksParent :: (inh -> a) -> Fmt inh syn o e a
+asksParent :: (inh -> a) -> Fmt inh syn pre o e a
 asksParent f = Fmt $ asks f
 
-tellChildren :: inh -> Fmt inh syn o e a -> Fmt inh syn o e a
+tellChildren :: inh -> Fmt inh syn pre o e a -> Fmt inh syn pre o e a
 tellChildren inh (Fmt m) = Fmt $ local (const inh) m
 
 censorChildren
   :: Monoid syn'
-  => Fmt inh syn' o e a
-  -> (syn' -> a -> Fmt inh syn o e b)
-  -> Fmt inh syn o e b
+  => Fmt inh syn' pre o e a
+  -> (syn' -> a -> Fmt inh syn pre o e b)
+  -> Fmt inh syn pre o e b
 censorChildren (Fmt m) f = Fmt $ do
-  runR      <- asks (flip runReaderT)
-  (a, syn') <-
+  runR             <- asks (flip runReaderT)
+  pre0             <- gets snd
+  (a, (syn', pre)) <-
     hoist (lift . lift)
-    $ flip runStateT mempty
+    $ flip runStateT (mempty, pre0)
     $ PL.distribute
     $ runR
     $ PL.distribute m
+  fromFmt $ tellSucceeding (const pre)
   fromFmt $ f syn' a
 
-tellParent :: Semigroup syn => syn -> Fmt inh syn o e ()
-tellParent syn = Fmt $ modify (<> syn)
+tellParent :: Semigroup syn => syn -> Fmt inh syn pre o e ()
+tellParent syn = Fmt $ modify (\(syn0, pre) -> (syn0 <> syn, pre))
 
-write :: o -> Fmt inh syn o e ()
+write :: o -> Fmt inh syn pre o e ()
 write o = Fmt $ yield o
 
 censorWrites
-  :: Fmt inh syn o' e a -> ([o'] -> a -> Fmt inh syn o e b) -> Fmt inh syn o e b
+  :: Fmt inh syn pre o' e a
+  -> ([o'] -> a -> Fmt inh syn pre o e b)
+  -> Fmt inh syn pre o e b
 censorWrites (Fmt m) f = Fmt $ do
   (l, a) <- lift $ PPl.toListM' m
   fromFmt $ f l a
 
-  -- Free $ CensorWrites m (\o's a -> fromFmt $ f o's a)
-
-throw :: e -> Fmt inh syn o e a
+throw :: e -> Fmt inh syn pre o e a
 throw e = Fmt $ throwError e
+
+askPreceding :: Fmt inh syn pre o e pre
+askPreceding = precedingState $ \pre -> (pre, pre)
+
+tellSucceeding :: (pre -> pre) -> Fmt inh syn pre o e ()
+tellSucceeding f = precedingState $ \pre -> ((), f pre)
+
+precedingState :: (pre -> (a, pre)) -> Fmt inh syn pre o e a
+precedingState f =
+  Fmt $ state $ \(syn, pre) -> f pre & \(a, pre') -> (a, (syn, pre'))

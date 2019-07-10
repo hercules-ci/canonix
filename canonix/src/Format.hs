@@ -58,7 +58,7 @@ format debug src = do
       lg nd = traceDemand ("Demanding " <> show nd) nd
 
       produce = do
-        r <- Pipes.hoist (pure . runIdentity) (runFmt (cnxfmt >> finalNewline) (rootInherited src)) >-> renderSpaces >-> forever (await >>= (yield . Left))
+        r <- Pipes.hoist (pure . runIdentity) (runFmt (cnxfmt >> finalNewline) (rootInherited src) rootPreceding) >-> renderSpaces >-> forever (await >>= (yield . Left))
         yield (Right r)
         liftIO $ Control.Exception.throwIO $ Control.Exception.AssertionFailed "Can't consume past end"
 
@@ -84,7 +84,7 @@ format debug src = do
               Right end ->
                 pure end
 
-        (synthesized, _) <- case r of
+        (synthesized, _lastPreceding, _a) <- case r of
           Left e -> liftIO $ Control.Exception.throwIO $ Control.Exception.ErrorCall e
           Right r' -> pure r'
 
