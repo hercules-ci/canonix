@@ -146,7 +146,7 @@ pattern (:*:) :: a -> b -> (a, b)
 pattern a :*: b = (a, b)
 
 formatter :: Node -> [(Node, CnxFmt ())] -> CnxFmt ()
-formatter self children = withSelf self $ trySingleLine $
+formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySingleLine $
   case (typ self, children) of
     -- Expression is the root node of a file
     (Expression, _) -> do
