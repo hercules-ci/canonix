@@ -22,6 +22,10 @@ module Canonix.Monad.CnxFmt
   , tellParent
   , censorChildren
 
+    -- * Start-to-end
+  , Preceding
+  , rootPreceding
+
     -- * Formatting functions
 
   , verbatim
@@ -33,6 +37,7 @@ module Canonix.Monad.CnxFmt
   , withIndent'
   , withOptionalIndent
   
+  , preserveEmptyLinesBefore
   , trySingleLine
   , forceMultiline
 
@@ -45,12 +50,13 @@ import Control.Monad
 import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
 import           Data.Monoid                    ( Ap(Ap) )
+import           Data.Semigroup                 ( Max(Max) )
 import           Data.Semigroup.Generic
 import           Data.Set                       ( Set )
 import           GHC.Generics                   ( Generic )
 
 type CnxFmt
-  = Fmt Inherited Synthesized (Piece (Indented LogicalSpace)) ErrorMessage
+  = Fmt Inherited Synthesized Preceding (Piece (Indented LogicalSpace)) ErrorMessage
 
 type ErrorMessage = String
 
@@ -87,6 +93,31 @@ instance Semigroup Synthesized where (<>) = gmappend
 instance Monoid Synthesized where { mappend = gmappend; mempty = gmempty }
 
 
+
+data Preceding = Preceding
+  { furthestRow :: Int
+  }
+rootPreceding :: Preceding
+rootPreceding = Preceding
+  { furthestRow = 0
+  }
+
+-- | Max number of consecutive newlines to preserve
+linePreservationCap :: Int
+linePreservationCap = 3
+
+preserveEmptyLinesBefore :: Node -> CnxFmt () -> CnxFmt ()
+preserveEmptyLinesBefore n m = do
+  fr <- furthestRow <$> askPreceding
+  let skippedDistance = startRow n - fr
+
+  when (skippedDistance > 1) $ do
+    ind <- asksParent indent
+    write $ SpaceRequest (pure ind, Linebreak $ Max $ min linePreservationCap (skippedDistance - 1))
+
+  m
+
+  tellSucceeding (\pre -> pre { furthestRow = max (furthestRow pre) (fromIntegral (endRow n)) })
 
 -- | Copy a node to the output without any changes
 verbatim :: Node -> CnxFmt ()

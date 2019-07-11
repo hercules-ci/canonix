@@ -3,6 +3,7 @@
 {
   # 2
   a = true;
+
   /* 3 */
   b = false;
   c

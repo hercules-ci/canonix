@@ -1,5 +1,6 @@
 module Canonix.Node
   ( Node(..)
+  , isMultiline
   )
 where
 
@@ -10,6 +11,10 @@ import           TreeSitter.Nix
 data Node = Node
   { startByte :: {-# UNPACK #-}!Int
   , endByte :: {-# UNPACK #-}!Int
+  , startRow :: {-# UNPACK #-}!Int
+  , endRow :: {-# UNPACK #-}!Int
   , typ :: !Grammar
-  , isMultiline :: !Bool -- TODO: maybe preserve line numbers instead so we can figure out which parts of a construct are multiline
   } deriving (Eq, Ord, Show)
+
+isMultiline :: Node -> Bool
+isMultiline n = startRow n /= endRow n
