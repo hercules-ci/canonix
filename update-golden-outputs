@@ -1,0 +1,10 @@
+#!/usr/bin/env nix-shell
+#!nix-shell -i bash
+
+set -euo pipefail
+
+canonix="$(nix-build --expr 'let pkgs = import ./nix {}; in pkgs.haskell.lib.justStaticExecutables (pkgs.haskell.lib.dontCheck pkgs.canonixHaskellPackages.canonix)')/bin/canonix"
+
+for f in canonix/tests/golden/*.input.nix; do
+  $canonix --pipe <$f >${f/.input.nix/.output.nix}
+done
