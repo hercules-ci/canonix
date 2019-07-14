@@ -146,7 +146,8 @@ pattern (:*:) :: a -> b -> (a, b)
 pattern a :*: b = (a, b)
 
 formatter :: Node -> [(Node, CnxFmt ())] -> CnxFmt ()
-formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySingleLine $
+formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySingleLine $ do
+  sl <- asksParent singleLineAllowed
   case (typ self, children) of
     -- Expression is the root node of a file
     (Expression, _) -> do
@@ -191,7 +192,7 @@ formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySin
       b
 
     (Let,
-      One Let l
+      One AnonLet l
         (spanTypes [Bind, Inherit] -> bindings :*:
           (One AnonIn inkw
             (One bodyTyp body [])
@@ -199,9 +200,9 @@ formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySin
         )
       ) -> do
       l
-      withIndent 2 $
-        traverse_ snd bindings
-      newline
+      withIndent 2 $ forM_ bindings $ \(_, b) -> do
+        b
+        newline
       inkw
       if bodyTyp == Attrset
       then do
@@ -237,6 +238,50 @@ formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySin
       sc
       newline
 
+    (Parenthesized,
+      One AnonLParen open
+        (matchManyOfTypeWithComments ((/=) AnonRParen . typ) -> bindings :*:
+          Comments finalComments (
+            One AnonRParen close []
+          )
+        )
+      ) -> do
+        open
+        withIndent 2 $ do
+          forM_ bindings $ \(_, i) -> do
+            newline
+            i
+          mapM_ snd finalComments
+        newline
+        close
+
+    (List, [(ndOpen, open), (ndClose, close)])
+      | sl && typ ndOpen == AnonLBracket && typ ndClose == AnonRBracket  -> do
+      open
+      close
+
+    (List,
+      One AnonLBracket open
+        (matchManyOfTypeWithComments ((/=) AnonRBracket . typ) -> bindings :*:
+          Comments finalComments (
+            One AnonRBracket close []
+          )
+        )
+      ) -> do
+        open
+        withIndent 2 $ do
+          forM_ bindings $ \(_, i) -> do
+            newline
+            i
+          mapM_ snd finalComments
+        newline
+        close
+
+    (Attrset, [(ndOpen, open), (ndClose, close)])
+      | sl && typ ndOpen == AnonLBrace && typ ndClose == AnonRBrace  -> do
+      open
+      close
+
     (Attrset,
       One AnonLBrace open
         (spanTypes [Bind, Inherit] -> bindings :*:
@@ -259,14 +304,26 @@ formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySin
         space
         i
 
+    (With, One AnonWith with (One _ id (One AnonSemicolon semicol (One _ sub [])))) -> do
+      with
+      space
+      withIndent' 2 id
+      semicol
+      emptyLine
+      sub
+
     (AnonRBracket, []) -> verbatim self
     (AnonLBracket, []) -> verbatim self
     (AnonRBrace, []) -> verbatim self
     (AnonLBrace, []) -> verbatim self
+    (AnonRParen, []) -> verbatim self
+    (AnonLParen, []) -> verbatim self
     (AnonColon, []) -> verbatim self
     (Identifier, []) -> verbatim self
     (AnonEqual, []) -> verbatim self
     (AnonIn, []) -> verbatim self
+    (AnonWith, []) -> verbatim self
+    (AnonLet, []) -> verbatim self
     (Inherit, []) -> verbatim self
     (Let, []) -> verbatim self
     (AnonQuestion, []) -> verbatim self

@@ -31,6 +31,7 @@ module Canonix.Monad.CnxFmt
   , verbatim
   , space
   , newline
+  , emptyLine
   , finalNewline
 
   , withIndent
@@ -140,6 +141,14 @@ space = do
 -- | A newline in multiline format, but a space in single line format
 newline :: CnxFmt ()
 newline = do
+  ind <- asksParent indent
+  write $ SpaceRequest (pure ind, Linebreak 0)
+  void $ whenSingleLineAllowed $
+    tellParent mempty { singleLine = pure [SpaceRequest ()] }
+
+-- | An empty line in multiline format, but a space in single line format
+emptyLine :: CnxFmt ()
+emptyLine = do
   ind <- asksParent indent
   write $ SpaceRequest (pure ind, Linebreak 0)
   void $ whenSingleLineAllowed $
