@@ -37,14 +37,21 @@ instance Semigroup LogicalSpace where
 --
 -- The representation of indentation is probably not ideal but seems sufficient.
 renderSpaces :: Monad m => Pipe (Piece (Indented LogicalSpace)) ByteString m a
-renderSpaces = go Nothing
+renderSpaces = start
  where
+  -- Ignore space requests at file start
+  start = await >>= \case
+    SpaceRequest _ -> start
+    NonSpace bs -> writeNonSpace Nothing bs
+
   go ws = await >>= \case
-    NonSpace bs -> do
-      writeSpace ws
-      yield bs
-      go Nothing
+    NonSpace bs -> writeNonSpace ws bs
     SpaceRequest ws2 -> go (ws <> Just ws2)
+
+  writeNonSpace ws bs = do
+    writeSpace ws
+    yield bs
+    go Nothing
 
   writeSpace = mapM_ $ \case
     (_, Space) -> yield " "
