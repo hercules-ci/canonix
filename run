@@ -1,0 +1,7 @@
+#!/usr/bin/env nix-shell
+#!nix-shell -i bash
+
+# Run canonix via cabal
+
+cd "$(dirname ${BASH_SOURCE[0]})/canonix"
+cabal new-run exe:canonix -- "$@"
