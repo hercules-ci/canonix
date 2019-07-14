@@ -304,10 +304,10 @@ formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySin
         space
         i
 
-    (With, One AnonWith with (One _ id (One AnonSemicolon semicol (One _ sub [])))) -> do
+    (With, One AnonWith with (One _ a (One AnonSemicolon semicol (One _ sub [])))) -> do
       with
       space
-      withIndent' 2 id
+      withIndent' 2 a
       semicol
       emptyLine
       sub
