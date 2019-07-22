@@ -35,8 +35,8 @@ traceDemand :: String -> a -> a
 traceDemand = flip const  -- folds away the debug statements
 -- traceDemand = trace  -- should show an interleaving of Chunk production and Node demand
 
-format :: Bool -> ByteString -> IO BL.ByteString
-format debug src = do
+format :: Bool -> FilePath -> ByteString -> IO BL.ByteString
+format debug filepath src = do
   -- TODO: bracket patterns and move to Canonix.TreeSitter
   parser <- ts_parser_new
   _ <- ts_parser_set_language parser tree_sitter_nix
@@ -53,8 +53,8 @@ format debug src = do
     when debug $ dump src 0 root
 
     tree <- mkTree root
-    let 
-      (_ast, cnxfmt) = walk (fmap (lg . abstract) tree) formatter
+    let
+      (_ast, cnxfmt) = walk (fmap (lg . abstract) tree) (formatter filepath)
       lg nd = traceDemand ("Demanding " <> show nd) nd
 
       produce = do
@@ -62,7 +62,7 @@ format debug src = do
         yield (Right r)
         liftIO $ Control.Exception.throwIO $ Control.Exception.AssertionFailed "Can't consume past end"
 
-      consume = do 
+      consume = do
         (r, x) <- Pipes.Lift.runStateP (mempty :: BB.Builder) $
           fix $ \nxt ->
             await >>= \case
@@ -145,8 +145,8 @@ pattern Comments cs rest <- (spanTypes [Comment] -> (cs, rest))
 pattern (:*:) :: a -> b -> (a, b)
 pattern a :*: b = (a, b)
 
-formatter :: Node -> [(Node, CnxFmt ())] -> CnxFmt ()
-formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySingleLine $ do
+formatter :: FilePath -> Node -> [(Node, CnxFmt ())] -> CnxFmt ()
+formatter filepath self children = withSelf self $ preserveEmptyLinesBefore self $ trySingleLine $ do
   sl <- asksParent singleLineAllowed
   case (typ self, children) of
     -- Expression is the root node of a file
@@ -330,6 +330,7 @@ formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySin
     (AnonSemicolon, []) -> verbatim self
     (Spath, []) -> verbatim self
     (Integer, []) -> verbatim self
+    (ParseError, _) -> throw $ filepath <> ": parse error at line " <> show (startRow self)
     (Comment, []) -> do
       forceMultiline
       newline -- TODO: clearline

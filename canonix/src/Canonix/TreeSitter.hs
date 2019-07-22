@@ -15,6 +15,7 @@ import           Foreign.Marshal.Array          ( peekArray
                                                 )
 import           Foreign.Marshal.Utils          ( with )
 import           System.IO
+import           TreeSitter.Symbol              ( fromTSSymbol )
 import           TreeSitter.Nix
 import           TreeSitter.Node         hiding ( Node )
 import qualified TreeSitter.Node               as TS
@@ -46,7 +47,7 @@ printNode ind source n@TS.Node {..} = do
         let TSPoint {..} = nodeEndPoint
         in  "(" ++ show pointRow ++ "," ++ show pointColumn ++ ")"
       typ :: Grammar
-      typ = toEnum $ fromEnum $ nodeSymbol
+      typ = fromTSSymbol nodeSymbol
   hPutStrLn stderr $ replicate (ind * 2) ' ' ++ show typ ++ start ++ "-" ++ end
   hPutStrLn stderr $ replicate (ind * 2) ' ' ++ show (nodeInner source n)
 
@@ -60,7 +61,7 @@ dump source i nd = do
   void $ forChildren nd $ \c -> dump source (i + 1) c
 
 abstract :: TS.Node -> Node
-abstract n = Node { typ       = toEnum (fromEnum (nodeSymbol n))
+abstract n = Node { typ       = fromTSSymbol $ nodeSymbol n
                   , startByte = fromIntegral $ nodeStartByte n
                   , endByte   = fromIntegral $ nodeEndByte n
                   , startRow  = fromIntegral $ pointRow $ nodeStartPoint n

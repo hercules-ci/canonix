@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
-module Canonix.Monad.CnxFmt 
+module Canonix.Monad.CnxFmt
   ( -- * CnxFmt monad
     CnxFmt
   , ErrorMessage
@@ -33,11 +33,12 @@ module Canonix.Monad.CnxFmt
   , newline
   , emptyLine
   , finalNewline
+  , throw
 
   , withIndent
   , withIndent'
   , withOptionalIndent
-  
+
   , preserveEmptyLinesBefore
   , trySingleLine
   , forceMultiline

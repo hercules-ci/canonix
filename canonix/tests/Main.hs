@@ -22,7 +22,7 @@ main = do
         t
 
 describeGoldenTests
-  :: FilePath -> (BS.ByteString -> IO BL.ByteString) -> IO Spec
+  :: FilePath -> (FilePath -> BS.ByteString -> IO BL.ByteString) -> IO Spec
 describeGoldenTests dir f = do
   files <- filter (".input.nix" `isSuffixOf`) <$> listDirectory dir
   pure $ do
@@ -33,6 +33,6 @@ describeGoldenTests dir f = do
           outputFile = basename <> ".output.nix"
       it basename $ do
         input    <- BS.readFile (dir <> file)
-        output   <- f input
+        output   <- f (dir <> file) input
         expected <- BL.readFile (dir <> outputFile)
         output `shouldBe` expected
