@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Main
   ( main
   )
@@ -20,6 +21,8 @@ main = do
     describe "formatter" $ do
       describe "golden tests" $ do
         t
+      it "Can throw a parse error" $ do
+        format False "*inline*" "/*" `shouldThrow` errorCall "*inline*:1: parse error"
 
 describeGoldenTests
   :: FilePath -> (FilePath -> BS.ByteString -> IO BL.ByteString) -> IO Spec

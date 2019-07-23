@@ -2,7 +2,7 @@
 module Canonix.Monad.CnxFmt
   ( -- * CnxFmt monad
     CnxFmt
-  , ErrorMessage
+  , Error(..)
   , runFmt
 
     -- * Root-to-leaf
@@ -58,9 +58,12 @@ import           Data.Set                       ( Set )
 import           GHC.Generics                   ( Generic )
 
 type CnxFmt
-  = Fmt Inherited Synthesized Preceding (Piece (Indented LogicalSpace)) ErrorMessage
+  = Fmt Inherited Synthesized Preceding (Piece (Indented LogicalSpace)) Error
 
-type ErrorMessage = String
+data Error = Error
+  { errorLocation :: Node
+  , errorMessage :: String
+  }
 
 -- | Formatting information that flows from the root of the expression to the
 -- leaves.

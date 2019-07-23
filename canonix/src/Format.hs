@@ -54,7 +54,7 @@ format debug filepath src = do
 
     tree <- mkTree root
     let
-      (_ast, cnxfmt) = walk (fmap (lg . abstract) tree) (formatter filepath)
+      (_ast, cnxfmt) = walk (fmap (lg . abstract) tree) formatter
       lg nd = traceDemand ("Demanding " <> show nd) nd
 
       produce = do
@@ -85,7 +85,7 @@ format debug filepath src = do
                 pure end
 
         (synthesized, _lastPreceding, _a) <- case r of
-          Left e -> liftIO $ Control.Exception.throwIO $ Control.Exception.ErrorCall e
+          Left e -> liftIO $ Control.Exception.throwIO $ Control.Exception.ErrorCall $ renderError filepath e
           Right r' -> pure r'
 
         when debug $ lift $ do
@@ -96,6 +96,9 @@ format debug filepath src = do
 
 
     Pipes.runEffect (produce >-> consume)
+
+renderError :: FilePath -> Error -> String
+renderError fp er = fp <> ":" <> show (1 + startRow (errorLocation er)) <> ": " <> errorMessage er
 
 
 -- | Traverse a tree, invoking the provided function at each node.
@@ -145,8 +148,8 @@ pattern Comments cs rest <- (spanTypes [Comment] -> (cs, rest))
 pattern (:*:) :: a -> b -> (a, b)
 pattern a :*: b = (a, b)
 
-formatter :: FilePath -> Node -> [(Node, CnxFmt ())] -> CnxFmt ()
-formatter filepath self children = withSelf self $ preserveEmptyLinesBefore self $ trySingleLine $ do
+formatter :: Node -> [(Node, CnxFmt ())] -> CnxFmt ()
+formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySingleLine $ do
   sl <- asksParent singleLineAllowed
   case (typ self, children) of
     -- Expression is the root node of a file
@@ -330,7 +333,7 @@ formatter filepath self children = withSelf self $ preserveEmptyLinesBefore self
     (AnonSemicolon, []) -> verbatim self
     (Spath, []) -> verbatim self
     (Integer, []) -> verbatim self
-    (ParseError, _) -> throw $ filepath <> ": parse error at line " <> show (startRow self)
+    (ParseError, _) -> throw Error { errorLocation = self, errorMessage = "parse error" }
     (Comment, []) -> do
       forceMultiline
       newline -- TODO: clearline
