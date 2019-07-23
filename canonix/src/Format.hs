@@ -35,8 +35,8 @@ traceDemand :: String -> a -> a
 traceDemand = flip const  -- folds away the debug statements
 -- traceDemand = trace  -- should show an interleaving of Chunk production and Node demand
 
-format :: Bool -> ByteString -> IO BL.ByteString
-format debug src = do
+format :: Bool -> FilePath -> ByteString -> IO BL.ByteString
+format debug filepath src = do
   -- TODO: bracket patterns and move to Canonix.TreeSitter
   parser <- ts_parser_new
   _ <- ts_parser_set_language parser tree_sitter_nix
@@ -53,7 +53,7 @@ format debug src = do
     when debug $ dump src 0 root
 
     tree <- mkTree root
-    let 
+    let
       (_ast, cnxfmt) = walk (fmap (lg . abstract) tree) formatter
       lg nd = traceDemand ("Demanding " <> show nd) nd
 
@@ -62,7 +62,7 @@ format debug src = do
         yield (Right r)
         liftIO $ Control.Exception.throwIO $ Control.Exception.AssertionFailed "Can't consume past end"
 
-      consume = do 
+      consume = do
         (r, x) <- Pipes.Lift.runStateP (mempty :: BB.Builder) $
           fix $ \nxt ->
             await >>= \case
@@ -85,7 +85,7 @@ format debug src = do
                 pure end
 
         (synthesized, _lastPreceding, _a) <- case r of
-          Left e -> liftIO $ Control.Exception.throwIO $ Control.Exception.ErrorCall e
+          Left e -> liftIO $ Control.Exception.throwIO $ Control.Exception.ErrorCall $ renderError filepath e
           Right r' -> pure r'
 
         when debug $ lift $ do
@@ -96,6 +96,9 @@ format debug src = do
 
 
     Pipes.runEffect (produce >-> consume)
+
+renderError :: FilePath -> Error -> String
+renderError fp er = fp <> ":" <> show (1 + startRow (errorLocation er)) <> ": " <> errorMessage er
 
 
 -- | Traverse a tree, invoking the provided function at each node.
@@ -330,6 +333,7 @@ formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySin
     (AnonSemicolon, []) -> verbatim self
     (Spath, []) -> verbatim self
     (Integer, []) -> verbatim self
+    (ParseError, _) -> throw Error { errorLocation = self, errorMessage = "parse error" }
     (Comment, []) -> do
       forceMultiline
       newline -- TODO: clearline

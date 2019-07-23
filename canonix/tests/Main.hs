@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Main
   ( main
   )
@@ -20,9 +21,11 @@ main = do
     describe "formatter" $ do
       describe "golden tests" $ do
         t
+      it "Can throw a parse error" $ do
+        format False "*inline*" "/*" `shouldThrow` errorCall "*inline*:1: parse error"
 
 describeGoldenTests
-  :: FilePath -> (BS.ByteString -> IO BL.ByteString) -> IO Spec
+  :: FilePath -> (FilePath -> BS.ByteString -> IO BL.ByteString) -> IO Spec
 describeGoldenTests dir f = do
   files <- filter (".input.nix" `isSuffixOf`) <$> listDirectory dir
   pure $ do
@@ -33,6 +36,6 @@ describeGoldenTests dir f = do
           outputFile = basename <> ".output.nix"
       it basename $ do
         input    <- BS.readFile (dir <> file)
-        output   <- f input
+        output   <- f (dir <> file) input
         expected <- BL.readFile (dir <> outputFile)
         output `shouldBe` expected

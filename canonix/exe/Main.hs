@@ -32,11 +32,11 @@ parser =
 
 runPipe :: Bool -> IO ()
 runPipe debug = do
-  BL.putStr =<< format debug =<< BS.getContents
+  BL.putStr =<< format debug "<stdin>" =<< BS.getContents
 
 runInPlace :: [FilePath] -> Bool -> IO ()
 runInPlace paths debug = do
   when (null paths) $ do
     hPutStrLn stderr "No file arguments provided. Did you mean --pipe?"
-  forConcurrently_ paths $ \path ->
-    BL.writeFile path =<< format debug =<< BS.readFile path
+  forConcurrently_ paths $ \filepath ->
+    BL.writeFile filepath =<< format debug filepath =<< BS.readFile filepath
