@@ -299,7 +299,28 @@ formatter self children = withSelf self $ preserveEmptyLinesBefore self $ trySin
           newline
           i
         mapM_ snd finalComments
-      newline -- ??
+      newline
+      close
+
+    (RecAttrset,
+      One AnonRec rek (
+        One AnonLBrace open
+          (spanTypes [Bind, Inherit] -> bindings :*:
+            Comments finalComments (
+              One AnonRBrace close []
+            )
+          )
+        )
+      ) -> do
+      rek
+      space
+      open
+      withIndent' 2 $ do
+        forM_ bindings $ \(_, i) -> do
+          newline
+          i
+        mapM_ snd finalComments
+      newline
       close
 
     (Attrs, as) | all (\(x, _) -> typ x == Identifier) as ->

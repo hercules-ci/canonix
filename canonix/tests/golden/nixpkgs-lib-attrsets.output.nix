@@ -9,10 +9,10 @@ let
 in
 
   rec {
-  inherit (builtins) attrNames listToAttrs hasAttr isAttrs getAttr;
+    inherit (builtins) attrNames listToAttrs hasAttr isAttrs getAttr;
 
 
-  /* Return an attribute from nested attribute sets.
+    /* Return an attribute from nested attribute sets.
 
      Example:
        x = { a = { b = 3; }; }
@@ -21,7 +21,7 @@ in
        attrByPath ["z" "z"] 6 x
        => 6
   */
-  attrByPath = attrPath: default: e:
+    attrByPath = attrPath: default: e:
     let attr = head attrPath;
     in
       if attrPath == [] then e
@@ -479,4 +479,4 @@ in
   zip = builtins.trace
     "lib.zip is deprecated, use lib.zipAttrsWith instead" zipAttrsWith;
 
-}
+  }
