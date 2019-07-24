@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE LambdaCase #-}
 module Canonix.Monad.CnxFmt
   ( -- * CnxFmt monad
     CnxFmt
@@ -48,9 +49,10 @@ module Canonix.Monad.CnxFmt
 import           Canonix.Monad.Fmt
 import           Canonix.Space
 import           Canonix.Node
-import Control.Monad
+import           Control.Monad
 import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
+import           Data.Foldable
 import           Data.Monoid                    ( Ap(Ap) )
 import           Data.Semigroup                 ( Max(Max) )
 import           Data.Semigroup.Generic
@@ -58,7 +60,7 @@ import           Data.Set                       ( Set )
 import           GHC.Generics                   ( Generic )
 
 type CnxFmt
-  = Fmt Inherited Synthesized Preceding (Piece (Indented LogicalSpace)) Error
+  = Fmt Inherited Synthesized Preceding (Piece Int LogicalSpace) Error
 
 data Error = Error
   { errorLocation :: Node
@@ -86,7 +88,7 @@ remainingWidth inh = max 30 (78 - indent inh)
 data Synthesized = Synthesized
   { unknownTypes :: Set String
   , fallbackNodes :: Set Node
-  , singleLine :: Ap Maybe [Piece ()]
+  , singleLine :: Ap Maybe [Piece () ()]
     -- ^
     -- singleLine represents a formatted single-line variation of the subtree, or
     -- Nothing when the line is too long, or if the original tree is multiline.
@@ -116,52 +118,61 @@ preserveEmptyLinesBefore n m = do
   fr <- furthestRow <$> askPreceding
   let skippedDistance = startRow n - fr
 
-  when (skippedDistance > 1) $ do
-    ind <- asksParent indent
-    write $ SpaceRequest (pure ind, Linebreak $ Max $ min linePreservationCap (skippedDistance - 1))
+  when (skippedDistance > 1) $
+    write $ SpaceRequest (Linebreak $ Max $ min linePreservationCap (skippedDistance - 1))
 
   m
 
   tellSucceeding (\pre -> pre { furthestRow = max (furthestRow pre) (fromIntegral (endRow n)) })
+
+writeNonSpaceSL :: BS.ByteString -> CnxFmt ()
+writeNonSpaceSL bs =
+  void $ whenSingleLineAllowed $ do
+    rw <- asksParent remainingWidth
+    tellParent mempty { singleLine = pure (NonSpace () bs) <$ guard (BS.length bs <= rw) }
+
+writeNonSpaceML :: BS.ByteString -> CnxFmt ()
+writeNonSpaceML bs = do
+  ind <- asksParent indent
+  write $ NonSpace ind bs
 
 -- | Copy a node to the output without any changes
 verbatim :: Node -> CnxFmt ()
 verbatim n = do
   src <- asksParent source
   let bs = BS.drop (startByte n) (BS.take (endByte n) src)
-  write $ NonSpace bs
-  _ <- whenSingleLineAllowed $ do
-    rw <- asksParent remainingWidth
-    tellParent mempty { singleLine = pure (NonSpace bs) <$ guard (BS.length bs <= rw) }
-  pure ()
+  writeNonSpaceML bs
+  writeNonSpaceSL bs
+
+writeSpaceML :: LogicalSpace -> CnxFmt ()
+writeSpaceML s = write $ SpaceRequest s
+
+writeSpaceSL :: CnxFmt ()
+writeSpaceSL = void $ whenSingleLineAllowed $
+  tellParent mempty { singleLine = pure [SpaceRequest ()] }
 
 -- | Just a space
 space :: CnxFmt ()
 space = do
-  write $ SpaceRequest $ pure Space
-  void $ whenSingleLineAllowed $
-    tellParent mempty { singleLine = pure [SpaceRequest ()] }
+  writeSpaceML Space
+  writeSpaceSL
 
 -- | A newline in multiline format, but a space in single line format
 newline :: CnxFmt ()
 newline = do
-  ind <- asksParent indent
-  write $ SpaceRequest (pure ind, Linebreak 0)
-  void $ whenSingleLineAllowed $
-    tellParent mempty { singleLine = pure [SpaceRequest ()] }
+  writeSpaceML $ Linebreak 0
+  writeSpaceSL
 
 -- | An empty line in multiline format, but a space in single line format
 emptyLine :: CnxFmt ()
 emptyLine = do
-  ind <- asksParent indent
-  write $ SpaceRequest (pure ind, Linebreak 0)
-  void $ whenSingleLineAllowed $
-    tellParent mempty { singleLine = pure [SpaceRequest ()] }
+  writeSpaceML (Linebreak 1)
+  writeSpaceSL
 
 -- | Request a line break and make the 'Canonix.Space' module write it out by
 -- also inserting an empty 'NonSpace'.
 finalNewline :: CnxFmt ()
-finalNewline = write (SpaceRequest (pure 0, Linebreak 0)) >> write (NonSpace mempty)
+finalNewline = writeSpaceML (Linebreak 0) >> write (NonSpace 0 mempty)
 
 
 -- | Runs its argument only if outputting a single line is a possibility.
@@ -185,18 +196,20 @@ trySingleLine fmt = do
     rw      <- asksParent remainingWidth
     censorWrites (censorChildren fmt $ \syn a -> do
       let
-        ln :: Ap Maybe [Piece ()]
+        ln :: Ap Maybe [Piece () ()]
         ln = do
           l0 <- singleLine syn
           l0 <$ guard (piecesLength l0 <= rw) -- TODO: unicode width
 
       (ln, a) <$ tellParent (syn { singleLine = ln })
-      ) $ \multilineChunks (ln, a) -> do
-      case ln of
-        Ap (Just l) ->
-          mapM_ (write . (pure Space <$)) l
+      ) $ \multilineChunks (ln, a) -> a <$ case ln of
+        Ap (Just l) -> do
+          ind <- asksParent indent
+          for_ l $ \case
+            SpaceRequest _ -> write $ SpaceRequest Space
+            NonSpace _ b -> write $ NonSpace ind b
+
         _ -> mapM_ write multilineChunks
-      pure a
 
 
 -- | Adds a newline and starts an indented block.
