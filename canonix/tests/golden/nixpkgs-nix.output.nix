@@ -26,21 +26,22 @@ let
         sh = busybox-sandbox-shell;
         nix =
           stdenv.mkDerivation rec {
-      inherit name src;
-      version = lib.getVersion name;
+            inherit name src;
+            version = lib.getVersion name;
 
-      is20 = lib.versionAtLeast version "2.0pre";
+            is20 = lib.versionAtLeast version "2.0pre";
 
-      VERSION_SUFFIX = lib.optionalString fromGit suffix;
+            VERSION_SUFFIX = lib.optionalString fromGit suffix;
 
-      outputs = [ "out" "dev" "man" "doc" ];
+            outputs = [ "out" "dev" "man" "doc" ];
 
-      nativeBuildInputs =
-        [ pkgconfig ]
+            nativeBuildInputs =
+              [ pkgconfig ]
         ++ lib.optionals (!is20) [ curl perl ]
         ++ lib.optionals fromGit [ autoreconfHook autoconf-archive bison flex libxml2 libxslt docbook5 docbook_xsl_ns jq ];
 
-      buildInputs = [ curl openssl sqlite xz bzip2 ]
+            buildInputs =
+              [ curl openssl sqlite xz bzip2 ]
         ++ lib.optional (stdenv.isLinux || stdenv.isDarwin) libsodium
         ++ lib.optionals is20 [ brotli boost editline ]
         ++ lib.optional withLibseccomp libseccomp
@@ -55,23 +56,24 @@ let
               })];
             }));
 
-      propagatedBuildInputs = [ boehmgc ];
+            propagatedBuildInputs = [ boehmgc ];
 
-      # Seems to be required when using std::atomic with 64-bit types
-      NIX_LDFLAGS = lib.optionalString (stdenv.hostPlatform.system == "armv6l-linux") "-latomic";
+            # Seems to be required when using std::atomic with 64-bit types
+            NIX_LDFLAGS =
+              lib.optionalString ( stdenv.hostPlatform.system == "armv6l-linux" ) "-latomic";
 
-      preConfigure =
-        # Copy libboost_context so we don't get all of Boost in our closure.
-        # https://github.com/NixOS/nixpkgs/issues/45462
-        if is20 then ''
+            preConfigure =
+              # Copy libboost_context so we don't get all of Boost in our closure.
+              # https://github.com/NixOS/nixpkgs/issues/45462
+              if is20 then ''
           mkdir -p $out/lib
           cp ${boost}/lib/libboost_context* $out/lib
         '' else ''
           configureFlagsArray+=(BDW_GC_LIBS="-lgc -lgccpp")
         '';
 
-      configureFlags =
-        [ "--with-store-dir=${storeDir}"
+            configureFlags =
+              [ "--with-store-dir=${storeDir}"
           "--localstatedir=${stateDir}"
           "--sysconfdir=${confDir}"
           "--disable-init-state"
@@ -90,41 +92,48 @@ let
            # RISC-V support in progress https://github.com/seccomp/libseccomp/pull/50
         ++ lib.optional (!withLibseccomp) "--disable-seccomp-sandboxing";
 
-      makeFlags = "profiledir=$(out)/etc/profile.d";
+            makeFlags = "profiledir=$(out)/etc/profile.d";
 
-      installFlags = "sysconfdir=$(out)/etc";
+            installFlags = "sysconfdir=$(out)/etc";
 
-      doInstallCheck = true; # not cross
+            doInstallCheck = true;
+            # not cross
 
-      # socket path becomes too long otherwise
-      preInstallCheck = lib.optional stdenv.isDarwin ''
+            # socket path becomes too long otherwise
+            preInstallCheck =
+              lib.optional stdenv.isDarwin ''
         export TMPDIR=$NIX_BUILD_TOP
       '';
 
-      separateDebugInfo = stdenv.isLinux;
+            separateDebugInfo = stdenv.isLinux;
 
-      enableParallelBuilding = true;
+            enableParallelBuilding = true;
 
-      meta = {
-        description = "Powerful package manager that makes package management reliable and reproducible";
-        longDescription = ''
+            meta =
+              {
+                description =
+                  "Powerful package manager that makes package management reliable and reproducible";
+                longDescription =
+                  ''
           Nix is a powerful package manager for Linux and other Unix systems that
           makes package management reliable and reproducible. It provides atomic
           upgrades and rollbacks, side-by-side installation of multiple versions of
           a package, multi-user package management and easy setup of build
           environments.
         '';
-        homepage = https://nixos.org/;
-        license = stdenv.lib.licenses.lgpl2Plus;
-        maintainers = [ stdenv.lib.maintainers.eelco ];
-        platforms = stdenv.lib.platforms.all;
-        outputsToInstall = [ "out" "man" ];
-      };
+                homepage = https://nixos.org/;
+                license = stdenv.lib.licenses.lgpl2Plus;
+                maintainers = [ stdenv.lib.maintainers.eelco ];
+                platforms = stdenv.lib.platforms.all;
+                outputsToInstall = [ "out" "man" ];
+              };
 
-      passthru = {
-        inherit fromGit;
+            passthru =
+              {
+                inherit fromGit;
 
-        perl-bindings = if includesPerl then nix else stdenv.mkDerivation {
+                perl-bindings =
+                  if includesPerl then nix else stdenv.mkDerivation {
           name = "nix-perl-${version}";
 
           inherit src;
@@ -147,30 +156,35 @@ let
 
           preBuild = "unset NIX_INDENT_MAKE";
         };
-      };
-    };
+              };
+          };
       in
         nix;
 
 in
   rec {
 
-  nix = nixStable;
+    nix = nixStable;
 
-  nix1 = callPackage common rec {
-    name = "nix-1.11.16";
-    src = fetchurl {
-      url = "http://nixos.org/releases/nix/${name}/${name}.tar.xz";
-      sha256 = "0ca5782fc37d62238d13a620a7b4bff6a200bab1bd63003709249a776162357c";
-    };
+    nix1 =
+      callPackage common rec {
+        name = "nix-1.11.16";
+        src =
+          fetchurl {
+            url = "http://nixos.org/releases/nix/${name}/${name}.tar.xz";
+            sha256 =
+              "0ca5782fc37d62238d13a620a7b4bff6a200bab1bd63003709249a776162357c";
+          };
 
-    # Nix1 has the perl bindings by default, so no need to build the manually.
-    includesPerl = true;
+        # Nix1 has the perl bindings by default, so no need to build the manually.
+        includesPerl = true;
 
-    inherit storeDir stateDir confDir boehmgc;
-  };
+        inherit storeDir stateDir confDir boehmgc;
+      };
 
-  nixStable = callPackage common (rec {
+    nixStable =
+      callPackage common (
+        rec {
     name = "nix-2.2.2";
     src = fetchurl {
       url = "http://nixos.org/releases/nix/${name}/${name}.tar.xz";
@@ -180,34 +194,43 @@ in
     inherit storeDir stateDir confDir boehmgc;
   } // stdenv.lib.optionalAttrs stdenv.cc.isClang {
     stdenv = llvmPackages_6.stdenv;
-  });
+  }
+      );
 
-  nixUnstable = lib.lowPrio (callPackage common rec {
-    name = "nix-2.3${suffix}";
-    suffix = "pre6631_e58a7144";
-    src = fetchFromGitHub {
-      owner = "NixOS";
-      repo = "nix";
-      rev = "e58a71442ad4a538b48fc7a9938c3690628c4741";
-      sha256 = "1hbjhnvjbh8bi8cjjgyrj4z1gw03ws12m2wi5azzj3rmhnh4c802";
-    };
-    fromGit = true;
+    nixUnstable =
+      lib.lowPrio (
+        callPackage common rec {
+          name = "nix-2.3${suffix}";
+          suffix = "pre6631_e58a7144";
+          src =
+            fetchFromGitHub {
+              owner = "NixOS";
+              repo = "nix";
+              rev = "e58a71442ad4a538b48fc7a9938c3690628c4741";
+              sha256 = "1hbjhnvjbh8bi8cjjgyrj4z1gw03ws12m2wi5azzj3rmhnh4c802";
+            };
+          fromGit = true;
 
-    inherit storeDir stateDir confDir boehmgc;
-  });
+          inherit storeDir stateDir confDir boehmgc;
+        }
+      );
 
-  nixFlakes = lib.lowPrio (callPackage common rec {
-    name = "nix-2.3${suffix}";
-    suffix = "pre20190612_06010ea";
-    src = fetchFromGitHub {
-      owner = "NixOS";
-      repo = "nix";
-      rev = "06010eaf199005a393f212023ec5e8bc97978537";
-      sha256 = "1fq99fmlag5hxvgzxrclgfsnc1fhhfwnslyshad1934wi9nzx1s2";
-    };
-    fromGit = true;
+    nixFlakes =
+      lib.lowPrio (
+        callPackage common rec {
+          name = "nix-2.3${suffix}";
+          suffix = "pre20190612_06010ea";
+          src =
+            fetchFromGitHub {
+              owner = "NixOS";
+              repo = "nix";
+              rev = "06010eaf199005a393f212023ec5e8bc97978537";
+              sha256 = "1fq99fmlag5hxvgzxrclgfsnc1fhhfwnslyshad1934wi9nzx1s2";
+            };
+          fromGit = true;
 
-    inherit storeDir stateDir confDir boehmgc;
-  });
+          inherit storeDir stateDir confDir boehmgc;
+        }
+      );
 
-}
+  }
