@@ -6,7 +6,6 @@
 -- represents verbatim text, indentation and whitespace types
 module Canonix.Space where
 
-import           Control.Monad
 import           Data.ByteString                ( ByteString )
 import qualified Data.ByteString               as BS
 import           Data.Char                      ( ord )
@@ -15,8 +14,8 @@ import           Data.Semigroup                 ( Max(Max) )
 import           Data.Word                      ( Word8 )
 import           Pipes
 
-data Piece ws
-  = NonSpace !ByteString
+data Piece indent ws
+  = NonSpace !indent !ByteString
   | SpaceRequest !ws
   deriving (Show, Functor)
 
@@ -36,34 +35,34 @@ instance Semigroup LogicalSpace where
 -- | Note: Does not print whitespace at the end. Insert a @'Verbatim' ""@ to write the final whitespace.
 --
 -- The representation of indentation is probably not ideal but seems sufficient.
-renderSpaces :: Monad m => Pipe (Piece (Indented LogicalSpace)) ByteString m a
+renderSpaces :: Monad m => Pipe (Piece Int LogicalSpace) ByteString m a
 renderSpaces = start
  where
   -- Ignore space requests at file start
   start = await >>= \case
     SpaceRequest _ -> start
-    NonSpace bs -> writeNonSpace Nothing bs
+    NonSpace i bs -> writeNonSpace i Nothing bs
 
   go ws = await >>= \case
-    NonSpace bs -> writeNonSpace ws bs
+    NonSpace i bs -> writeNonSpace i ws bs
     SpaceRequest ws2 -> go (ws <> Just ws2)
 
-  writeNonSpace ws bs = do
-    writeSpace ws
+  writeNonSpace i ws bs = do
+    writeSpace i ws
     yield bs
     go Nothing
 
-  writeSpace = mapM_ $ \case
-    (_, Space) -> yield " "
-    (ind, Linebreak (Max n)) ->
-      yield (BS.replicate (n + 1) (charCode '\n')) >> writeInd ind
+  writeSpace i = mapM_ $ \case
+    Space -> yield " "
+    Linebreak (Max n) ->
+      yield (BS.replicate (n + 1) (charCode '\n')) >> writeInd i
 
-  writeInd ind = forM_ ind $ \i -> yield (BS.replicate i (charCode ' '))
+  writeInd i = yield (BS.replicate i (charCode ' '))
 
-piecesLength :: [Piece ()] -> Int
+piecesLength :: [Piece i ()] -> Int
 piecesLength = f mempty
  where
-  f ws (NonSpace     bs  : pcs') = length ws + BS.length bs + f mempty pcs'
+  f ws (NonSpace    _ bs : pcs') = length ws + BS.length bs + f mempty pcs'
   f ws (SpaceRequest ws2 : pcs') = f (ws <> Just ws2) pcs'
   f _  []                        = 0
 

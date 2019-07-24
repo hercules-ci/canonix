@@ -6,7 +6,7 @@ let
   inherit (lib.trivial) and;
   inherit (lib.strings) concatStringsSep;
   inherit (lib.lists) fold concatMap concatLists;
-  in
+in
 
   rec {
   inherit (builtins) attrNames listToAttrs hasAttr isAttrs getAttr;
