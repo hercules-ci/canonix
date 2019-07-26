@@ -39,3 +39,6 @@ describeGoldenTests dir f = do
         output   <- f (dir <> file) input
         expected <- BL.readFile (dir <> outputFile)
         output `shouldBe` expected
+        -- test for idempotency
+        output2  <- f (dir <> file) (BL.toStrict output)
+        output2 `shouldBe` output
