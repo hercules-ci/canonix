@@ -17,10 +17,10 @@
         "homepage": "",
         "owner": "hercules-ci",
         "repo": "gitignore",
-        "rev": "4064e436313191f11969986e66b81cb6bb61bae6",
-        "sha256": "0358wcmgmc5mx4xfr08fxra4k05zvl2qyaix4gdlm7iwcscz609a",
+        "rev": "f9525682432c116edfb390482dcc7f72ae3df64b",
+        "sha256": "1iy502qi8ljj7c31vsjb75vnrbfkpc2pnfq85j33zvnr2li3kb4i",
         "type": "tarball",
-        "url": "https://github.com/hercules-ci/gitignore/archive/4064e436313191f11969986e66b81cb6bb61bae6.tar.gz",
+        "url": "https://github.com/hercules-ci/gitignore/archive/f9525682432c116edfb390482dcc7f72ae3df64b.tar.gz",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
     "haskell-hedgehog": {
