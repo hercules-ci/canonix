@@ -6,5 +6,7 @@
   canonix-lib = pkgs.canonixHaskellPackages.canonix;
   canonix-strict =
     pkgs.haskell.lib.buildStrictly pkgs.canonixHaskellPackages.canonix;
+
+  inherit (pkgs) hello;
   
 }
